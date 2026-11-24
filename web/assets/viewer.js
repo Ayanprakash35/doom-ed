@@ -118,23 +118,23 @@ function ensureCss() {
   const style = document.createElement('style');
   style.id = VIEWER_CSS_ID;
   style.textContent = `
-.dv-backdrop{position:fixed;inset:0;background:rgba(13,35,32,.5);z-index:80;display:flex;justify-content:flex-end}
-.dv-panel{width:min(780px,97vw);height:100%;display:flex;flex-direction:column;background:var(--surface,#fff);box-shadow:var(--shadow-lift,0 12px 32px rgba(0,0,0,.2));animation:dv-in .18s ease-out}
+.dv-backdrop{position:fixed;inset:0;background:rgba(16,19,22,.48);z-index:80;display:flex;justify-content:flex-end}
+.dv-panel{width:min(780px,97vw);height:100%;display:flex;flex-direction:column;background:var(--surface,#fcfcfa);box-shadow:var(--shadow-lift,0 10px 28px rgba(21,25,30,.12));animation:dv-in .18s ease-out}
 @keyframes dv-in{from{transform:translateX(24px);opacity:.6}to{transform:none;opacity:1}}
-.dv-head{display:flex;gap:12px;align-items:center;padding:14px 18px 10px;border-bottom:1px solid var(--line,#E1E8E7)}
+.dv-head{display:flex;gap:12px;align-items:center;padding:14px 18px 10px;border-bottom:1px solid var(--line,#e2e5e0)}
 .dv-head .meta{flex:1;min-width:0}
 .dv-head b{display:block;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dv-head small{color:var(--muted,#7D8B93);font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
-.dv-close{flex:none;width:34px;height:34px;border-radius:50%;border:1px solid var(--line,#E1E8E7);background:var(--surface,#fff);font-size:18px;line-height:1;cursor:pointer;color:var(--ink-2,#44535C)}
-.dv-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 18px;border-bottom:1px solid var(--line,#E1E8E7)}
+.dv-head small{color:var(--muted,#76808a);font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.dv-close{flex:none;width:34px;height:34px;border-radius:8px;border:1px solid var(--line,#e2e5e0);background:var(--surface,#fcfcfa);font-size:18px;line-height:1;cursor:pointer;color:var(--ink-2,#545d66);touch-action:manipulation}
+.dv-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 18px;border-bottom:1px solid var(--line,#e2e5e0)}
 .dv-grp{display:inline-flex;gap:4px;align-items:center}
-.dv-toolbar button,.dv-toolbar a.dv-tb{border:1px solid var(--line-2,#D3DEDC);background:var(--surface,#fff);border-radius:8px;padding:6px 10px;font:inherit;font-weight:700;font-size:12px;color:var(--ink-2,#44535C);text-decoration:none;cursor:pointer}
-.dv-toolbar button:hover,.dv-toolbar a.dv-tb:hover{border-color:var(--brand,#12807A);color:var(--brand-ink,#0B5F59)}
+.dv-toolbar button,.dv-toolbar a.dv-tb{border:1px solid var(--line-2,#c9cfd4);background:var(--surface,#fcfcfa);border-radius:8px;padding:6px 10px;font:inherit;font-weight:600;font-size:12px;color:var(--ink-2,#545d66);text-decoration:none;cursor:pointer;touch-action:manipulation}
+.dv-toolbar button:hover,.dv-toolbar a.dv-tb:hover{border-color:var(--brand,#1f4f6e);color:var(--brand-ink,#163b54)}
 .dv-toolbar button:disabled{opacity:.5;cursor:default}
-.dv-toolbar .dv-ask{border-color:var(--brand,#12807A);color:var(--brand-ink,#0B5F59);background:var(--brand-soft,#DDF0EC)}
-.dv-counter,.dv-zoomlabel{min-width:52px;text-align:center;font-size:12px;font-weight:800;color:var(--ink-2,#44535C)}
+.dv-toolbar .dv-ask{border-color:transparent;color:var(--brand-ink,#163b54);background:var(--brand-soft,rgba(31,79,110,.09))}
+.dv-counter,.dv-zoomlabel{min-width:52px;text-align:center;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--ink-2,#545d66)}
 .dv-sp{flex:1}
-.dv-stage{flex:1;overflow:auto;padding:16px;background:var(--canvas,#EEF3F2)}
+.dv-stage{flex:1;overflow:auto;overscroll-behavior:contain;padding:16px;background:var(--canvas,#eef0ec)}
 .dv-stage.dv-lock{overflow:hidden;padding:0}
 .dv-pdfwrap{display:flex;justify-content:center;align-items:flex-start}
 .dv-pdfpage{background:#fff;border:1px solid var(--line,#E1E8E7);box-shadow:var(--shadow,0 1px 3px rgba(0,0,0,.15));line-height:0}

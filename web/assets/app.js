@@ -50,6 +50,7 @@ const appShell = document.querySelector(".app-shell");
 const leftPane = $("left-pane");
 const leftToggle = $("left-toggle");
 const themeToggle = $("theme-toggle");
+const homeThemeToggle = $("home-theme-toggle");
 const scrim = $("scrim");
 
 const profileCard = $("profile-card");
@@ -158,6 +159,7 @@ function currentTheme() {
 function applyTheme(theme, { persist = true } = {}) {
   const next = theme === "dark" ? "dark" : "light";
   document.documentElement.setAttribute("data-theme", next);
+  document.documentElement.style.colorScheme = next;
   if (persist) {
     try {
       localStorage.setItem(THEME_KEY, next);
@@ -166,20 +168,26 @@ function applyTheme(theme, { persist = true } = {}) {
     }
   }
   const dark = next === "dark";
-  const sun = themeToggle.querySelector(".icon-sun");
-  const moon = themeToggle.querySelector(".icon-moon");
-  // SVG elements have no `hidden` IDL property — toggle the attribute itself.
-  if (sun) sun.toggleAttribute("hidden", !dark);
-  if (moon) moon.toggleAttribute("hidden", dark);
   const label = dark ? "Switch to light theme" : "Switch to dark theme";
-  themeToggle.setAttribute("aria-label", label);
-  themeToggle.title = label;
-  themeToggle.setAttribute("aria-pressed", String(dark));
+  for (const btn of [themeToggle, homeThemeToggle]) {
+    if (!btn) continue;
+    const sun = btn.querySelector(".icon-sun");
+    const moon = btn.querySelector(".icon-moon");
+    // SVG elements have no `hidden` IDL property — toggle the attribute itself.
+    if (sun) sun.toggleAttribute("hidden", !dark);
+    if (moon) moon.toggleAttribute("hidden", dark);
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+    btn.setAttribute("aria-pressed", String(dark));
+  }
 }
 
-themeToggle.addEventListener("click", () => {
-  applyTheme(currentTheme() === "dark" ? "light" : "dark");
-});
+for (const btn of [themeToggle, homeThemeToggle]) {
+  if (!btn) continue;
+  btn.addEventListener("click", () => {
+    applyTheme(currentTheme() === "dark" ? "light" : "dark");
+  });
+}
 
 // --- Sidebar (left triage pane) ----------------------------------------------
 const NARROW = "(max-width: 1080px)";
