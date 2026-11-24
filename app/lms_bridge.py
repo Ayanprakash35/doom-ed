@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 # Make sure induslms-agent package can be imported
-INDUSLMS_AGENT_PATH = os.environ.get("INDUSLMS_AGENT_PATH", "/Users/sid/induslms-agent")
-if os.path.exists(INDUSLMS_AGENT_PATH) and INDUSLMS_AGENT_PATH not in sys.path:
+INDUSLMS_AGENT_PATH = os.environ.get("INDUSLMS_AGENT_PATH", "")
+if INDUSLMS_AGENT_PATH and os.path.exists(INDUSLMS_AGENT_PATH) and INDUSLMS_AGENT_PATH not in sys.path:
     sys.path.append(INDUSLMS_AGENT_PATH)
 
 try:
@@ -192,9 +192,9 @@ def call_lms(
 ) -> Any:
     """Execute an LMS function with session.access.
     Retries once on 401 via session.refresh (only for read operations). Writes never retry."""
-    _ensure_lms_module()
     if not session or not session.access:
         raise LMSNotAuthenticatedError("Student not authenticated with Indus LMS.")
+    _ensure_lms_module()
 
     def _invoke(tok: str) -> Any:
         out = fn(tok, *args, **kwargs)
@@ -304,9 +304,9 @@ def fetch_student_payload(
 ) -> dict[str, Any]:
     """Fetch live student data (courses, eol tests, assessments, tasks, calendar,
     notifications, announcements, and full student profile) with per-student caching."""
-    _ensure_lms_module()
     if not session or not session.access:
         raise LMSNotAuthenticatedError("Student not authenticated with Indus LMS.")
+    _ensure_lms_module()
 
     def _builder(files: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         results: dict[str, Any] = {

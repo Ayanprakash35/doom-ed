@@ -204,3 +204,18 @@ def test_update_profile(client):
     assert student["grade"] == "DP 1"
     assert student["subjects"] == ["Economics HL", "History HL"]
     assert student["target_session"] == "Nov 2026"
+
+
+def test_startup_init_handles_permission_error_and_lifespan(monkeypatch):
+    """startup_init must not crash when token_path.exists() raises PermissionError."""
+    import app.main as main_mod
+
+    def _deny_exists(self):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(Path, "exists", _deny_exists)
+    main_mod.startup_init()
+
+    with TestClient(app) as c:
+        res = c.get("/health")
+        assert res.status_code == 200

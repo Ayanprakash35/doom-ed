@@ -7,32 +7,28 @@ practice and home-feed flags enabled (the fixture sets them for the server):
 
     .venv/bin/pytest tests/test_home_e2e.py -q
 
-The file is skipped if Playwright or the Chrome channel is unavailable.
+The file is skipped if Playwright or a Chromium binary is unavailable.
 """
 
 from __future__ import annotations
 
-import socket
-import threading
+from contextlib import contextmanager
 import time
 import uuid
 
 import pytest
-import uvicorn
 
 from app.cache import clear as clear_cache
 from app.main import app, db, practice_service, session_store
 from app.practice.models import Item, Skill, StudentState
 from app.sessions import Session
-
-try:  # Playwright is a dev dependency; keep collection friendly without it.
-    from playwright.sync_api import sync_playwright
-
-    PLAYWRIGHT_AVAILABLE = True
-except Exception:  # pragma: no cover - exercised only in minimal environments
-    sync_playwright = None
-    PLAYWRIGHT_AVAILABLE = False
-
+from tests.browser_helpers import (
+    PLAYWRIGHT_AVAILABLE,
+    launch_chromium_or_skip,
+    managed_browser_context,
+    start_uvicorn_server,
+    sync_playwright,
+)
 
 pytestmark = pytest.mark.skipif(
     not PLAYWRIGHT_AVAILABLE, reason="playwright is not installed"
@@ -45,12 +41,6 @@ SKILL_ID = f"home.e2e.{RUN_ID}"
 ITEM_PREFIX = f"home-e2e-{RUN_ID}-item-"
 OWNER = f"local:{STUDENT_UID}"
 CARD_COUNT = 8
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def _seed_practice() -> None:
@@ -145,29 +135,10 @@ def home_server():
     )
     session_store.add(session)
 
-    port = _find_free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    base_url = f"http://127.0.0.1:{port}"
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                break
-        except OSError:
-            time.sleep(0.1)
-    else:  # pragma: no cover - server failed to boot
-        session_store.drop(session.sid)
-        monkeypatch.undo()
-        pytest.fail("The test server did not start.")
-
     try:
-        yield {"base_url": base_url, "session": session}
+        with start_uvicorn_server(app) as base_url:
+            yield {"base_url": base_url, "session": session}
     finally:
-        server.should_exit = True
-        thread.join(timeout=5)
         clear_cache()
         _cleanup()
         session_store.drop(session.sid)
@@ -177,27 +148,28 @@ def home_server():
 @pytest.fixture(scope="module")
 def browser():
     with sync_playwright() as playwright:
+        instance = launch_chromium_or_skip(playwright)
         try:
-            instance = playwright.chromium.launch(channel="chrome", headless=True)
-        except Exception as exc:  # pragma: no cover - depends on the host
-            pytest.skip(f"Chrome is not available for Playwright: {exc}")
-        yield instance
-        instance.close()
+            yield instance
+        finally:
+            instance.close()
 
 
-def _new_context(browser, home_server, **kwargs):
-    context = browser.new_context(**kwargs)
-    context.add_cookies(
-        [
-            {
-                "name": "doomed_sid",
-                "value": home_server["session"].sid,
-                "domain": "127.0.0.1",
-                "path": "/",
-            }
-        ]
-    )
-    return context
+@contextmanager
+def _new_context(browser, request, *, sid: str | None = None, **kwargs):
+    with managed_browser_context(browser, request, **kwargs) as context:
+        if sid is not None:
+            context.add_cookies(
+                [
+                    {
+                        "name": "doomed_sid",
+                        "value": sid,
+                        "domain": "127.0.0.1",
+                        "path": "/",
+                    }
+                ]
+            )
+        yield context
 
 
 def _collect_console_error(message, sink):
@@ -225,15 +197,19 @@ def _fulfill_chat_stream(route):
     )
 
 
-def test_home_feed_answer_persist_load_more_and_teach(home_server, browser):
-    context = _new_context(browser, home_server, viewport={"width": 1280, "height": 900})
-    page = context.new_page()
-    page_errors = []
-    page.on("pageerror", lambda error: page_errors.append(str(error)))
-    page.on("console", lambda message: _collect_console_error(message, page_errors))
-    page.route("**/api/chat/send", _fulfill_chat_stream)
+def test_home_feed_answer_persist_load_more_and_teach(browser, home_server, request):
+    with _new_context(
+        browser,
+        request,
+        sid=home_server["session"].sid,
+        viewport={"width": 1280, "height": 900},
+    ) as context:
+        page = context.new_page()
+        page_errors = []
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
+        page.on("console", lambda message: _collect_console_error(message, page_errors))
+        page.route("**/api/chat/send", _fulfill_chat_stream)
 
-    try:
         page.goto(home_server["base_url"])
         page.wait_for_load_state("networkidle")
 
@@ -289,20 +265,18 @@ def test_home_feed_answer_persist_load_more_and_teach(home_server, browser):
         )
 
         assert page_errors == [], f"uncaught page errors: {page_errors}"
-    finally:
-        context.close()
 
 
-def test_home_feed_mobile_reaches_triage_and_composer(home_server, browser):
-    context = _new_context(
+def test_home_feed_mobile_reaches_triage_and_composer(browser, home_server, request):
+    with _new_context(
         browser,
-        home_server,
+        request,
+        sid=home_server["session"].sid,
         viewport={"width": 390, "height": 844},
         is_mobile=True,
         has_touch=True,
-    )
-    page = context.new_page()
-    try:
+    ) as context:
+        page = context.new_page()
         page.goto(home_server["base_url"])
         page.wait_for_load_state("networkidle")
         page.wait_for_selector(".feed-card", timeout=8000)
@@ -326,11 +300,9 @@ def test_home_feed_mobile_reaches_triage_and_composer(home_server, browser):
         page.locator("#chat-nav-home").click()
         page.wait_for_selector("#home-view:not([hidden])", timeout=5000)
         assert page.locator(".feed-card").first.is_visible()
-    finally:
-        context.close()
 
 
-def test_home_feed_calibration_state_for_empty_bank(home_server, browser):
+def test_home_feed_calibration_state_for_empty_bank(browser, home_server, request):
     """A fresh owner with no verified items sees the calibration state, not fake cards."""
     fresh = Session(
         access="",
@@ -344,68 +316,68 @@ def test_home_feed_calibration_state_for_empty_bank(home_server, browser):
         target_session="May 2027",
     )
     session_store.add(fresh)
-    context = browser.new_context(viewport={"width": 1100, "height": 800})
-    context.add_cookies(
-        [
-            {
-                "name": "doomed_sid",
-                "value": fresh.sid,
-                "domain": "127.0.0.1",
-                "path": "/",
-            }
-        ]
-    )
-    page = context.new_page()
     try:
-        page.goto(home_server["base_url"])
-        page.wait_for_load_state("networkidle")
-        page.wait_for_selector("#home-empty:not([hidden])", timeout=8000)
-        text = page.locator("#home-empty").text_content() or ""
-        assert "Preparing your practice" in text
-        assert page.locator(".feed-card").count() == 0
+        with _new_context(
+            browser,
+            request,
+            sid=fresh.sid,
+            viewport={"width": 1100, "height": 800},
+        ) as context:
+            page = context.new_page()
+            page.goto(home_server["base_url"])
+            page.wait_for_load_state("networkidle")
+            page.wait_for_selector("#home-empty:not([hidden])", timeout=8000)
+            text = page.locator("#home-empty").text_content() or ""
+            assert "Preparing your practice" in text
+            assert page.locator(".feed-card").count() == 0
     finally:
-        context.close()
         try:
             practice_service.store.reset_practice(fresh.owner)
         finally:
             session_store.drop(fresh.sid)
 
 
-def test_home_feed_404_falls_back_to_lesson(home_server, browser):
+def test_home_feed_404_falls_back_to_lesson(browser, home_server, request):
     """A flag mismatch (UI on, engine off) must not strand the student."""
-    context = _new_context(browser, home_server, viewport={"width": 1100, "height": 800})
-    page = context.new_page()
+    with _new_context(
+        browser,
+        request,
+        sid=home_server["session"].sid,
+        viewport={"width": 1100, "height": 800},
+    ) as context:
+        page = context.new_page()
 
-    def _not_found(route):
-        route.fulfill(
-            status=404,
-            content_type="application/json",
-            body='{"detail":"Practice engine is disabled."}',
-        )
+        def _not_found(route):
+            route.fulfill(
+                status=404,
+                content_type="application/json",
+                body='{"detail":"Practice engine is disabled."}',
+            )
 
-    page.route("**/api/home/feed*", _not_found)
-    try:
+        page.route("**/api/home/feed*", _not_found)
         page.goto(home_server["base_url"] + "/#/home")
         page.wait_for_selector("#center-pane:not([hidden])", timeout=8000)
         assert page.locator("#home-view").is_hidden()
         assert "#/lesson" in page.url
         assert page.locator("#composer-form").is_visible()
-    finally:
-        context.close()
 
 
-def test_home_feed_skips_and_reports_without_breaking_layout(home_server, browser):
+def test_home_feed_skips_and_reports_without_breaking_layout(browser, home_server, request):
     """Skip hides locally; report posts item feedback. Both stay in the feed DOM model."""
-    context = _new_context(browser, home_server, viewport={"width": 1280, "height": 900})
-    page = context.new_page()
-    events = []
-    page.on(
-        "request",
-        lambda request: events.append(request.url)
-        if request.method == "POST" and "/api/" in request.url
-        else None,
-    )
-    try:
+    with _new_context(
+        browser,
+        request,
+        sid=home_server["session"].sid,
+        viewport={"width": 1280, "height": 900},
+    ) as context:
+        page = context.new_page()
+        events = []
+        page.on(
+            "request",
+            lambda request: events.append(request.url)
+            if request.method == "POST" and "/api/" in request.url
+            else None,
+        )
         page.goto(home_server["base_url"])
         page.wait_for_load_state("networkidle")
         page.wait_for_selector(".feed-card", timeout=8000)
@@ -420,5 +392,3 @@ def test_home_feed_skips_and_reports_without_breaking_layout(home_server, browse
         skip_target.locator(".feed-action[data-action='skip']").click()
         assert skip_target.is_hidden()
         assert "Skipped" in (page.locator("#home-status").text_content() or "")
-    finally:
-        context.close()

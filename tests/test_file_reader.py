@@ -15,7 +15,9 @@ from pptx.util import Inches, Pt  # type: ignore
 
 from app.db import Database
 from app.file_reader import (
+    LMSNotAuthenticatedError,
     extract_document_pages,
+    fetch_and_cache_ref,
     get_file_bytes,
     ingest_bytes,
     inspect_document_pages,
@@ -264,3 +266,8 @@ def test_corrupt_file_handling():
     pages = extract_document_pages(corrupt_bytes, "corrupt.pdf")
     assert len(pages) == 1
     assert "Corrupt" in pages[0]["text"]
+
+
+def test_fetch_lms_resource_without_session_raises_auth_error(test_db):
+    with pytest.raises(LMSNotAuthenticatedError):
+        fetch_and_cache_ref(test_db, "tenant1:u1", "lms://resource/10/20", session=None)

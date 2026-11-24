@@ -185,7 +185,7 @@ $$\frac{b}{2} \sin \theta = \frac{\lambda}{2} \implies b \sin \theta = \lambda \
 
         time.sleep(1.5)
 
-        out_path = Path("/Users/sid/Documents/proj/doom-ed/docs/assets/homepage.png")
+        out_path = Path(__file__).resolve().parents[1] / "docs" / "assets" / "homepage.png"
         page.screenshot(path=str(out_path))
         print(f"Screenshot written to {out_path}")
 

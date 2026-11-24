@@ -25,6 +25,10 @@ venv/
 .ruff_cache/
 .shrinkray/
 tests/*.png
+test-results/
 
 # OS
 .DS_Store
+
+# Local Planning
+PLAN.md

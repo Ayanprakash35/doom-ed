@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
@@ -62,10 +63,18 @@ DATA_DIR = config.ensure_data_dir()
 
 logger = logging.getLogger("doomed")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    startup_init()
+    yield
+
+
 app = FastAPI(
     title="doom-ed",
     description="AI Study Coach & Pedagogy System grounded in Indus LMS and IB Resources",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS is a same-origin app. A wildcard with credentials lets any site try
@@ -99,10 +108,13 @@ def health() -> dict[str, Any]:
 
 
 # Auto-import local indus token on startup if available
-@app.on_event("startup")
 def startup_init() -> None:
     token_path = Path(os.path.expanduser(config.INDUSLMS_TOKEN_FILE))
-    if token_path.exists():
+    try:
+        exists = token_path.exists()
+    except OSError:
+        exists = False
+    if exists:
         try:
             import_local_indus_token(session_store, token_path=token_path)
         except Exception:

@@ -497,6 +497,7 @@ def test_login_is_unavailable_without_the_lms_plugin(monkeypatch):
 def test_builtin_lms_plugin_is_optional(monkeypatch):
     import app.integrations as integrations
 
+    monkeypatch.setattr("app.lms_bridge.lms", object())
     monkeypatch.setenv("DOOMED_LMS_PLUGIN", "1")
     statuses = {row["id"]: row for row in integrations.status()}
     assert "indus" in statuses

@@ -27,6 +27,10 @@ from pptx import Presentation  # type: ignore
 
 from app import config
 from app.db import Database
+from app.integrations.base import (
+    IntegrationNotConnectedError as LMSNotAuthenticatedError,
+    IntegrationUpstreamError as LMSUpstreamError,
+)
 from app.security import Cipher, safe_fetch, sanitize_filename
 
 # Teacher-authored and classmate-authored content is data, never instruction.

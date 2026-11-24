@@ -27,7 +27,8 @@ def test_store(tmp_path):
 
 
 @pytest.fixture
-def session(test_store):
+def session(test_store, monkeypatch):
+    monkeypatch.setattr("app.lms_bridge.lms", MagicMock())
     sess = Session(
         access="expired_access",
         refresh="expired_refresh",
