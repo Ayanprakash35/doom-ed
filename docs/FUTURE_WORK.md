@@ -1,8 +1,8 @@
 # Future Work — Adaptive Practice and Teaching Loop
 
 **Status:** Living roadmap
-**Baseline:** commit 4664f23, 190 tests passing
-**Date:** 2026-10-27
+**Baseline:** commit a7abef6, 209 tests passing (200 unit/integration + 9 browser)
+**Date:** 2026-11-24
 **Related:** [HOME_FEED.md](HOME_FEED.md), [DOCS.md](../DOCS.md), [ARCHITECTURE.md](../ARCHITECTURE.md)
 
 > This is the execution backlog, not a second design doc. The design and acceptance details for the feed live in HOME_FEED.md. This file tracks what is left, in what order, and how we will know it is done.
@@ -39,7 +39,8 @@ This plan answers three questions:
 - **Home UI:** scroll feed, plan header, reason disclosures, answered-card summaries, numeric form, skip/report, teach handoff, cursor pagination, dwell/impression events, mobile layout.
 - **Teaching bridge:** the practice brief reaches the teacher prompt; lesson quizzes carry skill ids; lesson answers update practice state.
 - **LMS plugin layer:** optional Indus adapter, registry, status endpoint, no LMS import inside the practice engine.
-- **Tests:** 190 pass, including 5 home-feed browser tests.
+- **CI & security foundation (M0.1–M0.3):** GitHub Actions CI (`Q1`), isolated test DB (`tests/conftest.py`), unique per-session local owner, DNS-pinned `safe_fetch` across `web_fetch` and `ib_client`, `assert_not_live_test` on FA/SA & tasks, IB proxy auth, streaming upload/fetch size limits, HTTP security headers & strict CSP (`/assets/boot.js`), SVG/download URL sanitization.
+- **Tests:** 209 pass (200 unit/integration + 9 browser tests).
 
 ### 2.2 Missing or thin
 
@@ -181,7 +182,7 @@ Priority meanings: P0 is required before daily student use; P1 is required befor
 | O2 | P1 | Ops | Rate limits and size caps | Per-owner limits; 429 on abuse; payload caps enforced |
 | O3 | P1 | Ops | Metrics and logs | Planner reasons, cost, reports, p95; no secrets or answer keys |
 | O4 | P2 | Ops | Export and reset | Owner can export or clear practice data with confirmation |
-| Q1 | P0 | Quality | CI for the full suite | Unit, integration, and browser tests run on every change |
+| Q1 | P0 | Quality | CI for the full suite (Done) | `.github/workflows/ci.yml` runs unit, integration, and browser tests on push/PR |
 | Q2 | P1 | Quality | Security regression suite | Answer leak, cross-owner, live-test, and XSS cases stay covered |
 | D1 | P0 | Docs | Content authoring guide | Schema, validation, verification, and a worked example |
 | D2 | P1 | Docs | Checkpoint and progress API docs | Endpoint contracts and error semantics documented |

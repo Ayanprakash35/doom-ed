@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Studio minimal UI & theme (`web/index.html`, `web/assets/style.css`, `web/assets/home.css`, `web/assets/cards.js`, `web/assets/viewer.js`) with Prussian Ink-Blue primary, honey-ochre momentum cues, `#home-theme-toggle`, `color-scheme` sync, and refreshed `docs/assets/homepage.png`.
+- GitHub Actions CI workflow (`.github/workflows/ci.yml`) running Python 3.11 and 3.13 across unit, integration, and Playwright Chromium tests (`tests/browser_helpers.py`, `--tracing=retain-on-failure` via `tests/conftest.py`).
+- Isolated temporary test data directory in `tests/conftest.py` so `pytest` never mutates workspace `data/` databases.
+- External `/assets/boot.js` script extracting inline theme bootstrap and vendor loading out of `web/index.html`.
 - Adaptive practice engine foundation behind `DOOMED_PRACTICE_ENGINE`: skill and item schema, deterministic planner, BKT/Elo mastery updates, FSRS-lite scheduling, owner-scoped attempt ledger, daily feed plans, and the feed/attempt/event/progress/teach API.
 - Optional LMS integration plugin layer in `app/integrations/`. The existing Indus bridge is wrapped as the built-in adapter. Local study and the practice engine work with no plugin installed. `GET /api/integrations` reports plugin availability and connection state.
 - Practice tests covering grading, scheduling, planner constraints, owner isolation, API flow, migrations, and the plugin boundary.
@@ -19,13 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Future work roadmap in `docs/FUTURE_WORK.md`: prioritized content, checkpoint, teaching-loop, UI, operations, and calibration work with milestones and exit criteria.
 
 ### Changed
+- Added `sse-starlette>=2.0.0` to `requirements.txt`, replaced deprecated FastAPI `@app.on_event("startup")` with `lifespan`, imported `LMSUpstreamError`/`LMSNotAuthenticatedError` in `app/file_reader.py`, and removed hardcoded local machine paths from `app/lms_bridge.py` and `scripts/capture_screenshot.py`.
 - Login, profile sync, and the teacher's LMS tools resolve an integration plugin instead of calling the bridge directly.
 - Thread creation now records `origin` and `origin_json`, so a lesson can carry the practice evidence that opened it.
 - `GET /api/session` and the local/LMS sign-in responses expose `features` so the shell can route to the feed without guessing.
-- The suite is now 190 tests (183 unit/integration plus 7 browser). All pass.
+- The suite is now 209 tests (200 unit/integration plus 9 browser). All pass.
 - Unslop pass across the prose documentation.
 
 ### Security
+- Standalone `create_local_session` now generates unique per-session `local:local_<hex>` owners instead of sharing `local:student`.
+- Hardened SSRF protections: `app/research.py:web_fetch` and `app/ib_client.py` route outbound requests through `safe_fetch`, `_PinnedDNSAdapter` mitigates DNS-rebinding TOCTOU, and `read_bounded_response` + streaming `/api/upload` enforce `MAX_FILE_BYTES` (`413` on oversized uploads).
+- Validated `thread_id` against `^[A-Za-z0-9_-]{1,64}$` and enforced `data/viz/` path containment + cross-owner thread non-disclosure.
+- Added `assert_not_live_test` checks on FA/SA assessment feedback and learning task detail fetches in `app/lms_bridge.py`; gated `/api/ib/search` and `/api/ib/facets` behind `get_current_session`.
+- Added HTTP security headers middleware (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, HTTP `Content-Security-Policy` with `frame-ancestors 'none'` and no `'unsafe-inline'` in `script-src`), configurable `DOOMED_COOKIE_SECURE`, sanitized error responses, `safeDownloadUrl` in `viewer.js`, and hardened SVG sanitization (`foreignobject`/`style`/`animate`/`set`/`use`) in `cards.js` and `viz-engine.js`.
 - Practice answer keys are Fernet-encrypted at rest and never included in feed responses. Attempt grading is owner-scoped and idempotent.
 
 ---

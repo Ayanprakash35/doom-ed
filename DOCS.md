@@ -45,18 +45,19 @@ Reference documentation for the HTTP endpoints, agent tools, and event stream in
 | Endpoint | Method | Body / Params | Description |
 |---|---|---|---|
 | `/api/files/{sha256}` | `GET` | Supports HTTP `Range: bytes=...` | Serves decrypted file bytes with `Accept-Ranges`, `Content-Length`, and `Content-Type` for the in-app slide-over viewer (`viewer.js`). Gated by strict per-owner ACL (`can_access_file`). |
-| `/api/upload` | `POST` | `multipart/form-data` with `file` | Uploads student file, Fernet-encrypts it on disk, indexes text/pages, and attaches to active thread. |
+| `/api/upload` | `POST` | `multipart/form-data` with `file` | Streams student upload up to `MAX_FILE_BYTES` (`413` if exceeded), Fernet-encrypts on disk, indexes text/pages, and attaches to active thread. |
 | `/api/viz/{visual_id}/png` | `GET` | — | Serves rasterized PNG of published visual diagram. |
 
 ---
 
 ### 1.5 IB resource catalog proxy
 
+Requires an authenticated session (`401` otherwise).
+
 | Endpoint | Method | Body / Params | Description |
 |---|---|---|---|
 | `/api/ib/search` | `GET` | `q`, `rtype`, `level`, `year`, `session`, `limit` | Ranked full-text search across 53k+ IB resources with automatic paper $\leftrightarrow$ markscheme pairing. |
 | `/api/ib/facets` | `GET` | `q`, `kind` | Resource aggregation counts. |
-| `/api/ib/resources/{sha256}` | `GET` | — | Metadata record for specific IB resource. |
 
 ---
 
@@ -143,6 +144,7 @@ Feature flags and defaults:
 | `DOOMED_DAILY_CARDS` | `12` | Default daily plan size, adjustable per student (1–30). |
 | `DOOMED_TARGET_RETENTION` | `0.90` | Spaced-repetition target used by the scheduler (0.80–0.95). |
 | `DOOMED_LMS_PLUGIN` | `1` | Enables the built-in Indus LMS adapter. Set to `0` for a purely local build. |
+| `DOOMED_COOKIE_SECURE` | `0` | Sets `Secure` attribute on `doomed_sid` cookies (`1`/`true` for HTTPS deployments). |
 
 ---
 

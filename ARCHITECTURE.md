@@ -61,7 +61,7 @@ flowchart TB
 ## 2. Multi-tenant security and storage isolation
 
 1. **Owner Scoping (`tenant:uid`)**:
-   - Standalone sessions use `owner = "local:{uid}"` (`local:student`), ensuring zero external service or tenant dependencies.
+   - Standalone sessions generate a per-session `owner = "local:local_{hex}"` (`create_local_session`), preventing separate local sessions from sharing threads, files, or practice state, with zero external tenant dependencies.
    - For Indus LMS linked sessions, students share an Indus LMS `tenant`, but have distinct `uid`, scoped by `owner = f"{tenant}:{uid}"`.
    - Every session, cache key, FTS5 metadata row, chat thread, and file ACL entry is strictly scoped by `owner`.
    - Student A can't view or search Student B's courses, files, grades, or chat threads even within the same tenant.
@@ -77,16 +77,16 @@ flowchart TB
    - `data/sessions.sqlite` and `data/doomed.sqlite` are created with `0600` permissions.
    - LMS access/refresh tokens, L2 cache payloads, private LMS files on disk (`data/blobs/private/{sha[:2]}/{sha}.enc`), and extracted page text in `file_pages` are encrypted with **Fernet** using a 32-byte key derived from `DOOMED_SECRET_KEY`.
 4. **SSRF Hardening (`safe_fetch`)**:
-   - Outbound file fetches enforce HTTPS on port 443, reject URL userinfo, resolve DNS via `socket.getaddrinfo`, and block loopback, private, link-local, multicast, and cloud metadata IPs (`169.254.169.254`, `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `::1`, `fc00::/7`) on initial requests and every redirect hop.
+   - Outbound fetches across file downloads (`file_reader.py`), web fetch (`research.py`), and IB catalog requests (`ib_client.py`) enforce HTTPS on port 443, reject URL userinfo, resolve DNS via `socket.getaddrinfo`, pin the validated IP (`_PinnedDNSAdapter`) to block DNS-rebinding TOCTOU, disable proxy env inheritance (`trust_env = False`), and block loopback, private, link-local, multicast, and cloud metadata IPs (`169.254.169.254`, `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `::1`, `fc00::/7`) on initial requests and every redirect hop, stripping `Authorization`/`Cookie` cross-origin and enforcing bounded streaming reads (`MAX_FILE_BYTES`).
 5. **Academic Integrity Protection**:
-   - Unsubmitted or in-progress EOL tests and assessments can't be explained or answered by the model. The server inspects submission status and raises `PermissionError` (mapping to HTTP 403), offering syllabus pointers and IB practice bank material instead.
+   - Unsubmitted or in-progress EOL tests, FA/SA assessments, and learning tasks can't be explained or answered by the model. The server inspects submission status (`assert_not_live_test`) before fetching detail endpoints and raises `PermissionError` (mapping to HTTP 403), offering syllabus pointers and IB practice bank material instead.
 6. **Served Content Is Never Executed**:
    - Uploaded and fetched files are served with a MIME type sniffed from the bytes, not the declared type. Only PDFs, images, and plain text are served inline; everything else becomes an attachment.
-   - Every file response carries `X-Content-Type-Options: nosniff` and a restrictive `Content-Security-Policy` with `sandbox`.
-   - The browser sanitizes all model and LMS output through DOMPurify, fails closed when the sanitizer is missing, and runs under a page-level CSP.
+   - Every response carries HTTP security headers (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and HTTP `Content-Security-Policy` with `frame-ancestors 'none'` and no `'unsafe-inline'` in `script-src`, backed by external `/assets/boot.js`); file responses retain a stricter sandbox CSP.
+   - The browser sanitizes all model, SVG, download URL, and LMS output through DOMPurify + SVG/URL scrubbers, fails closed when the sanitizer is missing, and validates `thread_id` against path traversal in visual publishing.
 7. **No Secret Reaches the Browser**:
-   - `/api/settings` returns `api_key_set`, never the key. Model routing changes require a loopback request.
-   - The local token bootstrap is opt-in (`DOOMED_AUTO_BOOTSTRAP_TOKEN=1`) and only applies to requests from `127.0.0.1`.
+   - `/api/settings` returns `api_key_set`, never the key. Model routing changes require a loopback request. Error responses are sanitized to omit internal paths or tracebacks.
+   - `DOOMED_COOKIE_SECURE=1` enables the `Secure` cookie flag behind HTTPS. The local token bootstrap is opt-in (`DOOMED_AUTO_BOOTSTRAP_TOKEN=1`) and only applies to requests from `127.0.0.1`.
 8. **Untrusted Content Stays Untrusted**:
    - School files are wrapped in an explicit envelope and marked as reference material. The teacher prompt states that file content is data, never instruction.
 

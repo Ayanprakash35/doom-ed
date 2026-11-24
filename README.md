@@ -132,11 +132,11 @@ Open `http://127.0.0.1:8000`:
 ## Testing
 
 ```bash
-# Run unit and integration suite (183 tests)
-pytest --ignore=tests/test_e2e_playwright.py --ignore=tests/test_home_e2e.py
+# Run unit and integration suite (200 tests)
+pytest --ignore=tests/test_e2e_playwright.py --ignore=tests/test_home_e2e.py --ignore=tests/test_frontend_xss.py
 
-# Run browser tests: legacy shell + the home feed (7 tests)
-pytest tests/test_e2e_playwright.py tests/test_home_e2e.py
+# Run browser tests: legacy shell, XSS, and the home feed (9 tests)
+pytest tests/test_e2e_playwright.py tests/test_home_e2e.py tests/test_frontend_xss.py
 ```
 
 ---
@@ -162,6 +162,7 @@ doom-ed/
 ├── web/
 │   ├── index.html           # Home feed + triage/chat shell, viewer, log
 │   └── assets/
+│       ├── boot.js          # Theme bootstrap & local-first vendor loader
 │       ├── app.js           # Client controller, hash router, SSE consumer
 │       ├── home.js          # Scroll feed, attempts, teach handoff, scroll events
 │       ├── home.css         # Feed layout, cards, progress, responsive states
@@ -170,14 +171,15 @@ doom-ed/
 │       ├── viz-engine.js    # Client-side Mermaid + SVG renderer & validator
 │       ├── renderer.js      # Marked + KaTeX ($/$$) + Obsidian callouts + DOMPurify
 │       ├── log-export.js    # Live Obsidian lesson log builder & exporter
-│       ├── style.css        # Academic UI design system with light/dark themes
+│       ├── style.css        # Studio UI design system with light/dark themes
 │       └── vendor/          # Vendored browser assets (Mermaid, KaTeX, Marked, DOMPurify)
 ├── docs/
 │   ├── HOME_FEED.md         # Home feed, planner, and teaching-loop design
 │   ├── FUTURE_WORK.md       # Prioritized backlog, milestones, and open decisions
 │   └── assets/
 │       └── homepage.png     # Live UI screenshot
-├── tests/                   # 183 unit/security/integration + 7 browser tests
+├── .github/workflows/       # CI pipeline (unit, integration, Playwright Chromium)
+├── tests/                   # 200 unit/security/integration + 9 browser tests
 ├── ARCHITECTURE.md          # Deployment & cloud architecture
 ├── DOCS.md                  # Detailed API & tool reference
 ├── CONTRIBUTING.md          # Contributing guidelines
