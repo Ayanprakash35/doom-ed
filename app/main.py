@@ -25,6 +25,7 @@ from typing import Any, AsyncGenerator
 
 from fastapi import (
     Cookie,
+    Depends,
     FastAPI,
     File,
     Form,
@@ -53,7 +54,7 @@ from app.practice import config as practice_config
 from app.practice.api import configure as configure_practice_api
 from app.practice.api import router as practice_router
 from app.practice.service import PracticeService
-from app.security import Cipher, WriteConfirmationManager
+from app.security import Cipher, WriteConfirmationManager, validate_thread_id
 from app.sessions import Session, SessionStore, create_local_session, import_local_indus_token
 
 COOKIE_NAME = "doomed_sid"
@@ -92,6 +93,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_APP_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://cdn.jsdelivr.net https://unpkg.com https://cdnjs.cloudflare.com; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data: https://cdn.jsdelivr.net; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "worker-src 'self' blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net"
+)
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if "content-security-policy" not in response.headers:
+        response.headers["Content-Security-Policy"] = _APP_CSP
+    return response
 
 # Initialize singletons
 session_store = SessionStore(DATA_DIR / "sessions.sqlite")
@@ -181,6 +206,21 @@ class ProfileUpdateRequest(BaseModel):
     target_session: str | None = None
 
 
+def _cookie_secure() -> bool:
+    return os.environ.get("DOOMED_COOKIE_SECURE", "").strip().lower() in ("1", "true")
+
+
+def _set_auth_cookie(response: Response, sid: str) -> None:
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=sid,
+        httponly=True,
+        samesite="lax",
+        max_age=86400 * 30,
+        secure=_cookie_secure(),
+    )
+
+
 @app.post("/api/session/local")
 def start_local_session(
     response: Response,
@@ -194,14 +234,7 @@ def start_local_session(
         subjects=body.subjects,
         target_session=body.target_session,
     )
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=sess.sid,
-        httponly=True,
-        samesite="lax",
-        max_age=86400 * 30,
-        secure=False,
-    )
+    _set_auth_cookie(response, sess.sid)
     return {
         "status": "ok",
         "features": _feature_flags(),
@@ -270,17 +303,14 @@ def login(body: LoginRequest, response: Response) -> dict[str, Any]:
         )
     try:
         sess = plugin.authenticate(session_store, body.email, body.password)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+    except Exception as exc:
+        logger.warning("LMS login failed (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed. Check your email and password.",
+        )
 
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=sess.sid,
-        httponly=True,
-        samesite="lax",
-        max_age=86400 * 30,  # 30 days
-        secure=False,
-    )
+    _set_auth_cookie(response, sess.sid)
     return {
         "status": "ok",
         "features": _feature_flags(),
@@ -304,7 +334,12 @@ def logout(response: Response, doomed_sid: str | None = Cookie(None)) -> dict[st
     if doomed_sid:
         session_store.drop(doomed_sid)
         cache.drop(doomed_sid)
-    response.delete_cookie(COOKIE_NAME)
+    response.delete_cookie(
+        COOKIE_NAME,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+    )
     return {"status": "ok"}
 
 
@@ -316,14 +351,7 @@ def session_info(
 ) -> dict[str, Any]:
     sess = get_current_session(request, doomed_sid)
     if not doomed_sid and sess:
-        response.set_cookie(
-            key=COOKIE_NAME,
-            value=sess.sid,
-            httponly=True,
-            samesite="lax",
-            max_age=86400 * 30,
-            secure=False,
-        )
+        _set_auth_cookie(response, sess.sid)
     student_info = {
         "name": sess.name,
         "email": sess.email,
@@ -348,10 +376,11 @@ def session_info(
                     student_info.update(payload["student"])
                 if payload.get("_auth_error"):
                     profile_error = payload["_auth_error"]
-            except integrations.IntegrationNotConnectedError as e:
-                profile_error = str(e)
-            except Exception as e:
-                profile_error = str(e)
+            except integrations.IntegrationNotConnectedError:
+                profile_error = "Indus LMS session is not connected."
+            except Exception as exc:
+                logger.warning("Failed to refresh LMS profile (%s)", type(exc).__name__)
+                profile_error = "Could not refresh school profile."
 
     body: dict[str, Any] = {
         "status": "ok",
@@ -485,7 +514,14 @@ async def chat_send(
 
     thread_id = (body.thread_id or "").strip()
     created_thread: dict[str, Any] | None = None
-    if not thread_id:
+    if thread_id:
+        try:
+            validate_thread_id(thread_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid thread_id.")
+        if not db.get_thread(sess.owner, thread_id):
+            raise HTTPException(status_code=404, detail="Thread not found.")
+    else:
         title = " ".join((body.message or "").split()[:8]).strip()
         if len(title) > 80:
             title = title[:80].rstrip()
@@ -523,10 +559,11 @@ async def chat_send(
                         attached_refs=body.attached_refs,
                     ):
                         loop.call_soon_threadsafe(queue.put_nowait, ev)
-                except Exception as e:  # surfaced to the browser, not swallowed
+                except Exception:  # logged server-side, generic error sent to client
+                    logger.exception("Chat turn failed for thread %s", thread_id)
                     loop.call_soon_threadsafe(
                         queue.put_nowait,
-                        {"event": "error", "data": {"error": str(e)}},
+                        {"event": "error", "data": {"error": "Unable to complete response. Please try again."}},
                     )
                 finally:
                     loop.call_soon_threadsafe(queue.put_nowait, sentinel)
@@ -541,10 +578,11 @@ async def chat_send(
                     "event": ev["event"],
                     "data": json.dumps(ev["data"]),
                 }
-        except Exception as e:
+        except Exception:
+            logger.exception("SSE stream failed for thread %s", thread_id)
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(e)}),
+                "data": json.dumps({"error": "Stream interrupted. Please try again."}),
             }
 
     return EventSourceResponse(event_generator())
@@ -572,8 +610,11 @@ def card_reply(
             reply_data=body.reply,
         )
         return {"status": "ok", "result": res}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Access denied.")
+    except Exception:
+        logger.exception("Card reply failed for thread %s", body.thread_id)
+        raise HTTPException(status_code=400, detail="Could not submit card reply.")
 
 
 class VizFeedbackRequest(BaseModel):
@@ -673,9 +714,27 @@ async def upload_file(
 ) -> dict[str, Any]:
     """Upload a file, encrypt it at rest, and grant owner access."""
     sess = get_current_session(request, doomed_sid)
-    raw = await file.read()
-    if len(raw) > config.MAX_FILE_BYTES:
-        raise HTTPException(status_code=400, detail="File exceeds maximum allowed size (25MB).")
+    chunks: list[bytes] = []
+    total = 0
+    chunk_size = 64 * 1024
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > config.MAX_FILE_BYTES:
+            limit_mb = config.MAX_FILE_BYTES / (1024 * 1024)
+            limit_label = (
+                f"{int(limit_mb)}MB"
+                if config.MAX_FILE_BYTES >= 1024 * 1024 and config.MAX_FILE_BYTES % (1024 * 1024) == 0
+                else f"{config.MAX_FILE_BYTES} bytes"
+            )
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds maximum allowed size ({limit_label}).",
+            )
+        chunks.append(chunk)
+    raw = b"".join(chunks)
 
     sha256 = hashlib.sha256(raw).hexdigest().lower()
     ref = f"upload://{sha256}"
@@ -779,6 +838,7 @@ def search_ib(
     year: str | None = None,
     session: str | None = None,
     limit: int = 15,
+    _sess: Session = Depends(get_current_session),
 ) -> dict[str, Any]:
     try:
         res = ib_client.search_ib(
@@ -791,17 +851,23 @@ def search_ib(
             pair_markschemes=True,
         )
         return {"status": "ok", "data": res}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except Exception:
+        logger.exception("IB catalog search failed")
+        raise HTTPException(status_code=502, detail="IB resource catalog is unavailable.")
 
 
 @app.get("/api/ib/facets")
-def ib_facets(q: str = "", kind: str | None = None) -> dict[str, Any]:
+def ib_facets(
+    q: str = "",
+    kind: str | None = None,
+    _sess: Session = Depends(get_current_session),
+) -> dict[str, Any]:
     try:
         res = ib_client.get_ib_facets(q=q, kind=kind)
         return {"status": "ok", "data": res}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    except Exception:
+        logger.exception("IB catalog facets lookup failed")
+        raise HTTPException(status_code=502, detail="IB resource catalog is unavailable.")
 
 
 # --- Settings / Runtime Config -----------------------------------------------

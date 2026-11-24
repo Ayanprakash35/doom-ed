@@ -3,6 +3,7 @@
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 
+import socket
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -36,8 +37,14 @@ def _contains(doc: str, required) -> None:
         assert any(alt in doc for alt in alternatives), f"missing: {item}"
 
 
+_PUBLIC_ADDRINFO = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
+
+
 def _resp(text="", *, status=200, ctype="text/html; charset=utf-8", payload=None, content=None):
     resp = MagicMock(status_code=status, headers={"Content-Type": ctype}, text=text)
+    resp.encoding = "utf-8"
+    raw = content if content is not None else text.encode("utf-8")
+    resp.iter_content.side_effect = lambda chunk_size=65536: [raw] if raw else []
     resp.json.return_value = payload
     if content is not None:
         resp.content = content
@@ -213,7 +220,8 @@ def test_web_fetch_success_mock():
     """web_fetch should extract title and readable text from HTTP 200 response."""
     html = ("<html><head><title>Mocked Title</title><script>var x = 1;</script></head>"
             "<body><p>Hello World Content</p></body></html>")
-    with patch("requests.get", return_value=_resp(html)):
+    with patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         patch("requests.Session.get", return_value=_resp(html)):
         res = web_fetch("https://example.com/test", max_chars=100)
     assert res["url"] == "https://example.com/test"
     assert res["title"] == "Mocked Title"
@@ -225,7 +233,8 @@ def test_web_fetch_success_mock():
 
 def test_web_fetch_truncation():
     """web_fetch should truncate text to max_chars."""
-    with patch("requests.get", return_value=_resp("A" * 500, ctype="text/plain")):
+    with patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         patch("requests.Session.get", return_value=_resp("A" * 500, ctype="text/plain")):
         res = web_fetch("https://example.com/long", max_chars=50)
     assert res["text"] == "A" * 50
     assert len(res["text"]) == 50
@@ -233,7 +242,8 @@ def test_web_fetch_truncation():
 
 def test_web_fetch_http_error():
     """web_fetch should handle HTTP 404/500 errors gracefully."""
-    with patch("requests.get", return_value=_resp("<html><body>Not Found</body></html>", status=404)):
+    with patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         patch("requests.Session.get", return_value=_resp("<html><body>Not Found</body></html>", status=404)):
         res = web_fetch("https://example.com/missing")
     assert res["status"] == 404
     assert res["error"] == "HTTP 404"
@@ -242,11 +252,36 @@ def test_web_fetch_http_error():
 
 def test_web_fetch_network_exception():
     """web_fetch should handle network timeouts and connection errors."""
-    with patch("requests.get", side_effect=requests.exceptions.Timeout("Connection timed out")):
+    with patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         patch("requests.Session.get", side_effect=requests.exceptions.Timeout("Connection timed out")):
         res = web_fetch("https://example.com/timeout")
     assert res["status"] == 0
     assert "timed out" in res["error"]
     assert res["text"] == ""
+
+
+def test_web_fetch_blocks_ssrf_and_insecure_schemes():
+    """web_fetch must block http://, loopback, cloud metadata IPs, and private redirects."""
+    for blocked in (
+        "http://example.com/page",
+        "https://127.0.0.1/secret",
+        "https://169.254.169.254/latest/meta-data/",
+    ):
+        res = web_fetch(blocked)
+        assert res["status"] == 0
+        assert res["text"] == ""
+        assert res["error"]
+
+    for target in (
+        "https://127.0.0.1/admin",
+        "https://169.254.169.254/latest/meta-data/",
+    ):
+        redirect_resp = MagicMock(status_code=302, headers={"location": target})
+        with patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+             patch("requests.Session.get", return_value=redirect_resp):
+            res = web_fetch("https://example.com/redirect")
+        assert res["status"] == 0
+        assert "forbidden" in res["error"].lower()
 
 
 def test_web_search_empty_query():

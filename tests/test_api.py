@@ -132,6 +132,8 @@ def test_file_upload_and_acl(client, auth_cookie):
 
 def test_ib_proxy_endpoints(client, monkeypatch):
     import app.ib_client as ibc
+    from app.main import session_store
+    from app.sessions import Session
 
     fake_search = {
         "status": "ok",
@@ -139,10 +141,23 @@ def test_ib_proxy_endpoints(client, monkeypatch):
         "meta": {"total": 1},
     }
     monkeypatch.setattr(ibc, "search_ib", lambda **kwargs: fake_search)
+    monkeypatch.setattr(ibc, "get_ib_facets", lambda **kwargs: {"status": "ok", "data": {}})
+
+    # Unauthenticated requests must be rejected
+    assert client.get("/api/ib/search?q=physics").status_code == 401
+    assert client.get("/api/ib/facets?q=physics").status_code == 401
+
+    # Authenticated requests succeed
+    sess = Session("tok_ib", "ref_ib", "tenant_ib", name="IB Student", email="ib@school.edu", uid="u_ib")
+    session_store.add(sess)
+    client.cookies.set("doomed_sid", sess.sid)
 
     res = client.get("/api/ib/search?q=physics")
     assert res.status_code == 200
     assert res.json()["data"]["data"][0]["title"] == "Physics Paper 1"
+
+    facets_res = client.get("/api/ib/facets?q=physics")
+    assert facets_res.status_code == 200
 
 
 def test_start_local_session(client):

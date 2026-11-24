@@ -8,21 +8,29 @@ signature parsing and pairing, LMS course-to-IB mapping, and in-memory TTL cachi
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import re
 import threading
 import time
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlencode
 
-import requests
-
+from app import config
 from app.config import get_setting
+from app.security import (
+    read_bounded_response,
+    safe_fetch,
+    validate_fetch_url,
+    validate_fetch_url_syntax,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_IB_BASE_URL = "https://ib-scrape.sidevv.xyz"
 DEFAULT_CACHE_TTL = 600.0  # 10 minutes
+_MAX_IB_JSON_BYTES = 5 * 1024 * 1024
 _HEX_64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 # In-memory thread-safe TTL cache: cache_key -> (expires_at, deepcopied_data)
@@ -168,7 +176,46 @@ SUBJECT_PATTERNS: list[tuple[str, str, str]] = [
 def get_base_url() -> str:
     """Return the configured base URL for the IB scrape service, stripped of trailing slashes."""
     raw = get_setting("IB_SCRAPE_BASE_URL", DEFAULT_IB_BASE_URL)
-    return (raw or DEFAULT_IB_BASE_URL).rstrip("/")
+    base = (raw or DEFAULT_IB_BASE_URL).rstrip("/")
+    validate_fetch_url_syntax(base, allow_local_ib=config.ALLOW_LOCAL_IB)
+    return base
+
+
+def _resolve_base_url(base_url: str | None = None, *, resolve_dns: bool = True) -> str:
+    if base_url:
+        base = base_url.rstrip("/")
+        validate_fetch_url_syntax(base, allow_local_ib=config.ALLOW_LOCAL_IB)
+    else:
+        base = get_base_url()
+    if resolve_dns:
+        validate_fetch_url(base, allow_local_ib=config.ALLOW_LOCAL_IB)
+    return base
+
+
+def _ib_get_json(url: str, params: dict[str, Any] | None = None) -> Any:
+    """Fetch JSON from the IB catalog using safe_fetch and a bounded response read."""
+    target_url = url
+    if params:
+        filtered = {k: v for k, v in params.items() if v is not None}
+        if filtered:
+            sep = "&" if "?" in url else "?"
+            target_url = f"{url}{sep}{urlencode(filtered)}"
+    resp = safe_fetch(
+        target_url,
+        stream=True,
+        timeout=15,
+        allow_local_ib=config.ALLOW_LOCAL_IB,
+    )
+    try:
+        if isinstance(getattr(resp, "status_code", None), int) and resp.status_code >= 400:
+            resp.raise_for_status()
+            raise RuntimeError(f"IB upstream returned HTTP {resp.status_code}")
+        resp.raise_for_status()
+        raw = read_bounded_response(resp, _MAX_IB_JSON_BYTES, truncate=False)
+    finally:
+        if hasattr(resp, "close"):
+            resp.close()
+    return json.loads(raw.decode("utf-8"))
 
 
 def clear_cache() -> None:
@@ -334,7 +381,7 @@ def pair_papers_and_markschemes(
     Falls back to matching without tz if only one unique timezone exists in candidate markschemes.
     Decorates matched papers with `paired_markscheme: { sha256, ref, title, filename, download_url }`.
     """
-    base = (base_url or get_base_url()).rstrip("/")
+    base = _resolve_base_url(base_url, resolve_dns=False)
     ms_candidates: dict[tuple[Any, ...], list[tuple[str | None, dict[str, Any]]]] = defaultdict(list)
     item_sigs: list[dict[str, Any]] = []
 
@@ -530,7 +577,7 @@ def search_ib(
     to every returned file item.
     When `pair_markschemes=True`, pairs any past paper (`rtype == "paper"`) with its matching markscheme.
     """
-    base = (base_url or get_base_url()).rstrip("/")
+    base = _resolve_base_url(base_url)
     cache_key = (
         "search",
         q,
@@ -565,9 +612,7 @@ def search_ib(
     if sort:
         params["sort"] = sort
 
-    resp = requests.get(f"{base}/search", params=params, timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = _ib_get_json(f"{base}/search", params=params)
 
     if isinstance(payload, dict) and "data" in payload:
         raw_items = payload["data"] if isinstance(payload["data"], list) else []
@@ -613,7 +658,7 @@ def get_ib_facets(
     base_url: str | None = None,
 ) -> dict[str, Any]:
     """Retrieve aggregation facet counts from the IB catalog."""
-    base = (base_url or get_base_url()).rstrip("/")
+    base = _resolve_base_url(base_url)
     cache_key = ("facets", q, kind, base)
     cached = get_cached(cache_key)
     if cached is not None:
@@ -623,9 +668,7 @@ def get_ib_facets(
     if kind:
         params["kind"] = kind
 
-    resp = requests.get(f"{base}/facets", params=params, timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = _ib_get_json(f"{base}/facets", params=params)
 
     set_cached(cache_key, payload, ttl=DEFAULT_CACHE_TTL)
     return copy.deepcopy(payload)
@@ -637,15 +680,13 @@ def get_ib_resource(sha256: str, base_url: str | None = None) -> dict[str, Any]:
         raise ValueError(f"Invalid sha256 hex string: {sha256!r}")
 
     sha = sha256.strip().lower()
-    base = (base_url or get_base_url()).rstrip("/")
+    base = _resolve_base_url(base_url)
     cache_key = ("resource", sha, base)
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
 
-    resp = requests.get(f"{base}/resources/{sha}", timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = _ib_get_json(f"{base}/resources/{sha}")
 
     ref = f"ib://{sha}"
     download_url = f"{base}/download/{sha}"
@@ -682,7 +723,7 @@ def get_ib_download_url(sha256: str, base_url: str | None = None) -> str:
     if not isinstance(sha256, str) or not _HEX_64_RE.fullmatch(sha256.strip()):
         raise ValueError(f"Invalid sha256 hex string: {sha256!r}")
     sha = sha256.strip().lower()
-    base = (base_url or get_base_url()).rstrip("/")
+    base = _resolve_base_url(base_url, resolve_dns=False)
     return f"{base}/download/{sha}"
 
 
@@ -693,7 +734,7 @@ def get_ib_links(
     base_url: str | None = None,
 ) -> list[dict[str, Any]]:
     """Retrieve outbound resource links (Google Drive, MEGA, etc.)."""
-    base = (base_url or get_base_url()).rstrip("/")
+    base = _resolve_base_url(base_url)
     cache_key = ("links", q, platform, limit, base)
     cached = get_cached(cache_key)
     if cached is not None:
@@ -703,9 +744,7 @@ def get_ib_links(
     if platform:
         params["platform"] = platform
 
-    resp = requests.get(f"{base}/links", params=params, timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = _ib_get_json(f"{base}/links", params=params)
 
     if isinstance(payload, dict) and "data" in payload and isinstance(payload["data"], list):
         rows = payload["data"]
@@ -720,15 +759,13 @@ def get_ib_links(
 
 def get_ib_stats(base_url: str | None = None) -> dict[str, Any]:
     """Retrieve catalog statistics and index health."""
-    base = (base_url or get_base_url()).rstrip("/")
+    base = _resolve_base_url(base_url)
     cache_key = ("stats", base)
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
 
-    resp = requests.get(f"{base}/stats", timeout=15)
-    resp.raise_for_status()
-    payload = resp.json()
+    payload = _ib_get_json(f"{base}/stats")
 
     set_cached(cache_key, payload, ttl=DEFAULT_CACHE_TTL)
     return copy.deepcopy(payload)

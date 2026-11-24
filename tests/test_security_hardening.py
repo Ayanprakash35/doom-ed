@@ -355,3 +355,164 @@ def test_safe_fetch_strips_auth_on_cross_origin_redirect():
     assert "Authorization" not in calls[1].kwargs["headers"]
 
 
+# --- M0.3: Critical Security & Integrity Hardening regressions -------------
+
+
+def test_local_sessions_have_distinct_owners_and_isolated_data():
+    """Two POST /api/session/local calls must produce distinct owners that cannot see each other's threads/files."""
+    c1 = TestClient(app)
+    c2 = TestClient(app)
+
+    r1 = c1.post("/api/session/local", json={"name": "Student One"})
+    r2 = c2.post("/api/session/local", json={"name": "Student Two"})
+    assert r1.status_code == 200 and r2.status_code == 200
+
+    sid1 = c1.cookies.get("doomed_sid")
+    sid2 = c2.cookies.get("doomed_sid")
+    assert sid1 and sid2 and sid1 != sid2
+    sess1 = session_store.get(sid1)
+    sess2 = session_store.get(sid2)
+    assert sess1 is not None and sess2 is not None
+    assert sess1.owner != sess2.owner
+
+    # Student 1 creates a thread and uploads a file
+    t_res = c1.post("/api/threads", json={"title": "Student 1 Secret Thread"})
+    assert t_res.status_code == 200
+    t_id = t_res.json()["thread"]["id"]
+
+    up_res = c1.post(
+        "/api/upload",
+        files={"file": ("secret1.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")},
+    )
+    assert up_res.status_code == 200
+    sha = up_res.json()["sha256"]
+
+    # Student 2 cannot see Student 1's thread or download Student 1's file
+    threads2 = c2.get("/api/threads").json()["threads"]
+    assert all(t["id"] != t_id for t in threads2)
+    assert c2.get(f"/api/threads/{t_id}").status_code == 404
+    assert c2.get(f"/api/files/{sha}").status_code == 403
+
+
+def test_thread_id_validation_and_foreign_thread_no_integrity_leak(tmp_path):
+    """Path-traversal thread_ids are rejected; foreign thread_ids never leak sqlite3.IntegrityError."""
+    c_owner = TestClient(app)
+    c_other = TestClient(app)
+    assert c_owner.post("/api/session/local", json={"name": "Owner"}).status_code == 200
+    assert c_other.post("/api/session/local", json={"name": "Intruder"}).status_code == 200
+
+    t_res = c_owner.post("/api/threads", json={"title": "Owner Thread"})
+    assert t_res.status_code == 200
+    foreign_tid = t_res.json()["thread"]["id"]
+
+    # Path traversal rejected on /api/chat/send
+    bad_res = c_other.post(
+        "/api/chat/send",
+        json={"thread_id": "../escape", "message": "hello"},
+    )
+    assert bad_res.status_code == 400
+
+    # Foreign thread_id rejected cleanly without 500 / IntegrityError
+    foreign_res = c_other.post(
+        "/api/chat/send",
+        json={"thread_id": foreign_tid, "message": "hello"},
+    )
+    assert foreign_res.status_code == 404
+
+    # Orchestrator directly: handle_viz_feedback rejects ../escape and run_turn raises PermissionError
+    local_db = Database(tmp_path / "doomed.sqlite")
+    orch = Orchestrator(db=local_db, write_mgr=WriteConfirmationManager())
+    s_a = Session(access="t", refresh="r", tenant="tn", name="a", email="a@x.edu", uid="u1")
+    s_b = Session(access="t2", refresh="r2", tenant="tn", name="b", email="b@x.edu", uid="u2")
+    local_db.create_thread(owner=s_a.owner, title="A thread", thread_id="thread_a_1")
+
+    orch._pending_viz["call_escape"] = {
+        "thread_id": "../escape",
+        "owner": s_b.owner,
+        "kind": "mermaid",
+        "slug": "x",
+        "brief": "b",
+        "source_code": "graph TD\nA-->B",
+        "iteration": 1,
+        "maker_messages": [],
+    }
+    viz_res = orch.handle_viz_feedback(s_b, "call_escape", {"ok": True, "dom_warnings": []})
+    assert viz_res["status"] == "error"
+
+    with pytest.raises(PermissionError, match="Thread not found"):
+        list(orch.process_user_turn(session=s_b, thread_id="thread_a_1", user_message="hi"))
+    local_db.close()
+
+
+def test_http_security_headers_and_csp(client, auth_cookie):
+    """Root HTML enforces strict CSP & framing headers; uploaded files keep sandbox CSP."""
+    root_res = client.get("/")
+    assert root_res.status_code == 200
+    assert root_res.headers.get("x-frame-options") == "DENY"
+    assert root_res.headers.get("x-content-type-options") == "nosniff"
+    assert root_res.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+    csp = root_res.headers.get("content-security-policy", "")
+    assert "frame-ancestors 'none'" in csp
+    script_src = next(
+        (d.strip() for d in csp.split(";") if d.strip().startswith("script-src")),
+        "",
+    )
+    assert script_src and "'unsafe-inline'" not in script_src
+
+    # HTML itself must not carry inline <script> or inline onerror handlers
+    html = root_res.text
+    assert 'src="/assets/boot.js"' in html
+    assert "onerror=" not in html
+
+    # /api/files/{sha256} must preserve its sandbox CSP
+    client.cookies.set("doomed_sid", auth_cookie)
+    upload = client.post(
+        "/api/upload",
+        files={"file": ("notes.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")},
+    )
+    sha = upload.json()["sha256"]
+    file_res = client.get(f"/api/files/{sha}")
+    assert file_res.status_code == 200
+    assert "sandbox" in file_res.headers.get("content-security-policy", "")
+
+
+def test_oversized_upload_413_and_bounded_fetch_limit(client, auth_cookie, monkeypatch, test_db):
+    """Oversized /api/upload returns 413 and bounded fetch rejects > MAX_FILE_BYTES."""
+    import app.config as cfg
+    from app.file_reader import fetch_and_cache_ref
+    from app.security import read_bounded_response
+
+    monkeypatch.setattr(cfg, "MAX_FILE_BYTES", 1024)
+    client.cookies.set("doomed_sid", auth_cookie)
+
+    oversized = b"A" * 2048
+    res = client.post(
+        "/api/upload",
+        files={"file": ("big.bin", io.BytesIO(oversized), "application/octet-stream")},
+    )
+    assert res.status_code == 413
+
+    # Direct read_bounded_response check (streaming chunks without Content-Length)
+    stream_resp = MagicMock(headers={})
+    stream_resp.iter_content.return_value = [b"B" * 600, b"B" * 600]
+    with pytest.raises(ValueError, match="maximum allowed size"):
+        read_bounded_response(stream_resp, 1024, truncate=False)
+
+    # fetch_and_cache_ref must reject > MAX_FILE_BYTES from upstream
+    big_resp = MagicMock(
+        status_code=200,
+        headers={"content-type": "application/pdf", "content-length": "2048"},
+    )
+    big_resp.iter_content.return_value = [b"C" * 2048]
+    with patch("app.file_reader.safe_fetch", return_value=big_resp):
+        with pytest.raises(ValueError, match="maximum allowed size"):
+            fetch_and_cache_ref(test_db, "tenant:u", f"ib://{'a' * 64}", session=None)
+
+
+def test_ib_endpoints_require_auth(client):
+    """Unauthenticated IB proxy routes must return 401."""
+    assert client.get("/api/ib/search?q=physics").status_code == 401
+    assert client.get("/api/ib/facets?q=physics").status_code == 401
+
+

@@ -3,16 +3,21 @@
 
 from __future__ import annotations
 
+import json
+import socket
 import sys
 from pathlib import Path
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 import requests
 
+from app import config
 from app.ib_client import (
+    _MAX_IB_JSON_BYTES,
     clear_cache,
     get_ib_download_url,
     get_ib_facets,
@@ -24,6 +29,7 @@ from app.ib_client import (
     parse_paper_signature,
     search_ib,
 )
+from app.security import SSRFError, validate_fetch_url_syntax
 
 
 @pytest.fixture(autouse=True)
@@ -34,9 +40,15 @@ def reset_ib_cache():
     clear_cache()
 
 
-def _resp(payload):
+_PUBLIC_ADDRINFO = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))]
+
+
+def _resp(payload, status_code: int = 200, headers: dict | None = None):
+    raw = json.dumps(payload).encode("utf-8")
     resp = mock.MagicMock()
-    resp.json.return_value = payload
+    resp.status_code = status_code
+    resp.headers = headers or {}
+    resp.iter_content.return_value = [raw]
     resp.raise_for_status.return_value = None
     return resp
 
@@ -181,11 +193,16 @@ def test_search_ib_envelope_and_decorations():
                   "filename": "Physics_paper_2__TZ1_HL.pdf", "rtype": "paper", "level": "hl"}],
         "meta": {"count": 1, "query": "physics"},
     }
-    with mock.patch("requests.get", return_value=_resp(body)) as mock_get:
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=_resp(body)) as mock_get:
         res = search_ib(q="physics", rtype="paper", limit=10, pair_markschemes=False)
-        params = mock_get.call_args.kwargs["params"]
+        called_url = mock_get.call_args.args[0]
+        params = parse_qs(urlparse(called_url).query)
         assert mock_get.call_count == 1
-        assert (params["q"], params["rtype"], params["limit"]) == ("physics", "paper", 10)
+        assert mock_get.call_args.kwargs["stream"] is True
+        assert mock_get.call_args.kwargs["allow_redirects"] is False
+        assert mock_get.call_args.kwargs["timeout"] == 15
+        assert (params["q"], params["rtype"], params["limit"]) == (["physics"], ["paper"], ["10"])
         assert res["status"] == "ok" and len(res["data"]) == 1
         item = res["data"][0]
         assert item["sha256"] == sha
@@ -204,10 +221,12 @@ def test_search_ib_targeted_followup_pairing():
         "level": "hl", "sess": "May", "yr": "2023",
     }], "meta": {"count": 1}}
 
-    def side_effect(url, params=None, **kwargs):
-        return _resp(ms_payload if params and params.get("rtype") == "markscheme" else paper_payload)
+    def side_effect(url, **kwargs):
+        qs = parse_qs(urlparse(url).query)
+        return _resp(ms_payload if qs.get("rtype") == ["markscheme"] else paper_payload)
 
-    with mock.patch("requests.get", side_effect=side_effect) as mock_get:
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", side_effect=side_effect) as mock_get:
         res = search_ib(q="May 2023 Physics", rtype="paper", pair_markschemes=True)
         assert mock_get.call_count == 2  # 1 initial search + 1 targeted follow-up search
         paired = res["data"][0]["paired_markscheme"]
@@ -219,7 +238,8 @@ def test_search_ib_targeted_followup_pairing():
 def test_get_ib_resource():
     sha = "f" * 64
     payload = {"status": "ok", "data": {"sha256": sha, "filename": "Chemistry_HL_TZ1.pdf", "size": 1048576}, "meta": {}}
-    with mock.patch("requests.get", return_value=_resp(payload)):
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=_resp(payload)):
         res = get_ib_resource(sha)
         assert res["status"] == "ok"
         assert res["ref"] == f"ib://{sha}"
@@ -242,7 +262,8 @@ def test_get_ib_download_url():
 def test_get_ib_facets():
     facets = {"status": "ok", "data": {"rtype": [{"value": "paper", "count": 12000}],
               "level": [{"value": "HL", "count": 6000}]}, "meta": {"query": ""}}
-    with mock.patch("requests.get", return_value=_resp(facets)) as mock_get:
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=_resp(facets)) as mock_get:
         res = get_ib_facets(q="physics")
         assert mock_get.call_count == 1
         assert res["status"] == "ok" and "rtype" in res["data"]
@@ -250,7 +271,8 @@ def test_get_ib_facets():
 
 def test_get_ib_links():
     payload = {"status": "ok", "data": [{"url": "https://mega.nz/folder/xyz", "platform": "mega", "direct_file": False}], "meta": {}}
-    with mock.patch("requests.get", return_value=_resp(payload)):
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=_resp(payload)):
         links = get_ib_links(q="drive", platform="mega", limit=10)
     assert isinstance(links, list)
     assert len(links) == 1 and links[0]["platform"] == "mega"
@@ -258,7 +280,8 @@ def test_get_ib_links():
 
 def test_get_ib_stats():
     payload = {"status": "ok", "data": {"files": 53200, "bytes": 107374182400, "indexed": 53200}, "meta": {}}
-    with mock.patch("requests.get", return_value=_resp(payload)):
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=_resp(payload)):
         stats = get_ib_stats()
     assert stats["status"] == "ok"
     assert stats["data"]["files"] == 53200
@@ -271,7 +294,8 @@ def test_get_ib_stats():
 def test_in_memory_ttl_caching_and_expiry():
     sha = "9" * 64
     body = {"status": "ok", "data": [{"sha256": sha, "title": "Paper.pdf", "rtype": "notes"}], "meta": {}}
-    with mock.patch("requests.get", return_value=_resp(body)) as mock_get:
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=_resp(body)) as mock_get:
         # 1st call -> HTTP call
         r1 = search_ib(q="biology", pair_markschemes=False)
         assert mock_get.call_count == 1
@@ -285,3 +309,56 @@ def test_in_memory_ttl_caching_and_expiry():
         clear_cache()
         search_ib(q="biology", pair_markschemes=False)
         assert mock_get.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# 6. SSRF Redirect, Bounded Read, and Cleanup Tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("location", [
+    "http://127.0.0.1/secret",
+    "http://169.254.169.254/latest/meta-data/",
+])
+def test_ib_client_rejects_ssrf_redirect(location):
+    redirect_resp = mock.MagicMock()
+    redirect_resp.status_code = 302
+    redirect_resp.headers = {"location": location}
+
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=redirect_resp):
+        with pytest.raises(SSRFError):
+            search_ib(q="physics", pair_markschemes=False)
+    redirect_resp.close.assert_called_once()
+
+
+def test_ib_client_closes_response_on_http_error_and_rejects_oversized_json():
+    err_resp = mock.MagicMock()
+    err_resp.status_code = 502
+    err_resp.headers = {}
+    err_resp.raise_for_status.side_effect = requests.HTTPError("502 Bad Gateway")
+
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=err_resp):
+        with pytest.raises(requests.HTTPError):
+            get_ib_stats()
+    err_resp.close.assert_called_once()
+
+    big_resp = mock.MagicMock()
+    big_resp.status_code = 200
+    big_resp.headers = {"content-length": str(_MAX_IB_JSON_BYTES + 1)}
+    big_resp.raise_for_status.return_value = None
+
+    with mock.patch("socket.getaddrinfo", return_value=_PUBLIC_ADDRINFO), \
+         mock.patch("requests.Session.get", return_value=big_resp):
+        with pytest.raises(ValueError, match="maximum allowed size"):
+            get_ib_facets(q="math")
+    assert big_resp.close.called
+
+
+def test_validate_fetch_url_reads_allow_local_ib_dynamically(monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_LOCAL_IB", False)
+    with pytest.raises(SSRFError):
+        validate_fetch_url_syntax("http://127.0.0.1:8471/search")
+
+    monkeypatch.setattr(config, "ALLOW_LOCAL_IB", True)
+    validate_fetch_url_syntax("http://127.0.0.1:8471/search")

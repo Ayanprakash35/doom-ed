@@ -907,6 +907,14 @@ def build_study_triage(
             score = a.get("score")
             total = a.get("total")
             if a.get("submitted") and score is not None and total is not None and score < total and aid:
+                try:
+                    assert_not_live_test(
+                        item_status=a.get("status"),
+                        submitted=bool(a.get("submitted")),
+                        has_result=(score is not None),
+                    )
+                except PermissionError:
+                    continue
                 fb_text = ""
                 try:
                     fb = call_lms(session, store, lms.assessment_feedback, aid)
@@ -994,9 +1002,9 @@ def get_graded_item_detail(
 
         status = test_row.get("status") if test_row else None
         submitted = (
-            test_row.get("is_submitted")
-            if test_row
-            else None
+            test_row.get("submitted")
+            if test_row and "submitted" in test_row
+            else (test_row.get("is_submitted") if test_row else None)
         )
         score = test_row.get("score") if test_row else None
         has_result = score is not None
@@ -1018,13 +1026,17 @@ def get_graded_item_detail(
         payload = fetch_student_payload(session, store=store)
         a_row = None
         for a in payload.get("assessments") or []:
-            if str(a.get("id")) == item_id:
+            if str(a.get("id")) == item_id or (a.get("assignment_id") and str(a.get("assignment_id")) == item_id):
                 a_row = a
                 break
 
         status = a_row.get("status") if a_row else None
         submitted = a_row.get("submitted") if a_row else None
-        has_result = a_row.get("marks") is not None if a_row else None
+        has_result = (
+            (a_row.get("score") is not None or a_row.get("marks") is not None)
+            if a_row
+            else None
+        )
 
         assert_not_live_test(item_status=status, submitted=submitted, has_result=has_result)
 
@@ -1039,6 +1051,23 @@ def get_graded_item_detail(
         }
 
     elif item_type == "task":
+        payload = fetch_student_payload(session, store=store)
+        t_row = None
+        for t in payload.get("tasks") or []:
+            if str(t.get("id")) == item_id:
+                t_row = t
+                break
+
+        status = t_row.get("status") if t_row else None
+        submitted = (
+            t_row.get("submitted")
+            if t_row and "submitted" in t_row
+            else (t_row.get("is_submitted") if t_row else None)
+        )
+        has_result = (t_row.get("score") is not None) if t_row else None
+
+        assert_not_live_test(item_status=status, submitted=submitted, has_result=has_result)
+
         detail = call_lms(session, store, lms.learning_task_detail, session.tenant, item_id)
         return {
             "item_type": "task",

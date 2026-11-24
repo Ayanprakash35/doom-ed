@@ -73,20 +73,49 @@ function fileUrlFor(sha256) {
   return `/api/files/${encodeURIComponent(sha256)}`;
 }
 
+function safeDownloadUrl(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /[\x00-\x1f\x7f]/.test(trimmed)) return null;
+  if (trimmed.startsWith('/')) {
+    if (trimmed.startsWith('//') || trimmed.includes('\\')) return null;
+    try {
+      const origin = window.location && window.location.origin;
+      if (!origin || origin === 'null') return null;
+      const parsed = new URL(trimmed, origin);
+      if (parsed.origin === origin) return trimmed;
+    } catch (e) {
+      return null;
+    }
+    return null;
+  }
+  if (/^(https?|blob):/i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'blob:') {
+        return trimmed;
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+  return null;
+}
+
 function downloadUrlFor(src, explicit) {
-  if (explicit) return explicit;
+  if (explicit) return safeDownloadUrl(explicit);
   if (!src) return null;
   try {
     const url = new URL(src, location.href);
     if (url.origin === location.origin && /\/api\/files\//.test(url.pathname)) {
       url.searchParams.set('download', '1');
       url.hash = '';
-      return url.pathname + url.search;
+      return safeDownloadUrl(url.pathname + url.search);
     }
   } catch (e) {
     /* not a local URL */
   }
-  return src;
+  return safeDownloadUrl(src);
 }
 
 /**
@@ -276,8 +305,9 @@ function shell(opts) {
 }
 
 function toolbarBase(viewer, toolsHtml) {
-  const download = viewer.opts.downloadUrl
-    ? `<a class="dv-tb" href="${escAttr(viewer.opts.downloadUrl)}" download="${escAttr(viewer.opts.filename || 'file')}">Download</a>`
+  const safeHref = safeDownloadUrl(viewer.opts.downloadUrl);
+  const download = safeHref
+    ? `<a class="dv-tb" href="${escAttr(safeHref)}" download="${escAttr(viewer.opts.filename || 'file')}">Download</a>`
     : '';
   viewer.toolbar.innerHTML = `${toolsHtml || ''}<span class="dv-sp"></span>${download}`;
 }
@@ -790,8 +820,9 @@ async function openText(viewer, markdown) {
 function fallback(viewer, note) {
   const { opts, stage } = viewer;
   toolbarBase(viewer, askButtonHtml());
-  const download = opts.downloadUrl
-    ? `<a class="dv-btn" href="${escAttr(opts.downloadUrl)}" download="${escAttr(opts.filename || 'file')}">Download</a>`
+  const safeHref = safeDownloadUrl(opts.downloadUrl);
+  const download = safeHref
+    ? `<a class="dv-btn" href="${escAttr(safeHref)}" download="${escAttr(opts.filename || 'file')}">Download</a>`
     : '';
   stage.innerHTML = `<div class="dv-fallback">
     <div><b>${escHtml(opts.filename || 'File')}</b><p>${escHtml(note || 'This file type cannot be previewed here.')}</p></div>

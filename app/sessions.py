@@ -535,15 +535,19 @@ def create_local_session(
     grade: str = "DP 2",
     subjects: list[str] | None = None,
     target_session: str = "May 2026",
+    uid: str | None = None,
 ) -> Session:
     """Create a standalone Session with no LMS credentials."""
+    clean_uid = uid.strip() if isinstance(uid, str) else ""
+    if not clean_uid:
+        clean_uid = f"local_{secrets.token_hex(8)}"
     sess = Session(
         access="",
         refresh="",
         tenant="local",
         name=name or "IB Student",
         email="",
-        uid="student",
+        uid=clean_uid,
         grade=grade or "DP 2",
         curriculum="DP",
         subjects=subjects or list(DEFAULT_SUBJECTS),

@@ -20,8 +20,10 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from cryptography.fernet import Fernet
+from requests.adapters import HTTPAdapter
 
-from app.config import ALLOW_LOCAL_IB, SECRET_KEY, derive_fernet_key
+from app import config
+from app.config import SECRET_KEY, derive_fernet_key
 
 LIVE_TEST_ERROR_MSG = "Live test protection: assistant only explains graded/submitted work."
 
@@ -149,12 +151,23 @@ def _check_ip_allowed(ip_str: str) -> None:
         raise SSRFError(f"Access to non-global/private IP {ip} is forbidden")
 
 
-def validate_fetch_url(url: str, *, allow_local_ib: bool | None = None) -> None:
-    """Validate an outbound URL against SSRF rules.
+_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-    Enforces HTTPS on port 443 (except localhost:8471 when allow_local_ib=True),
-    rejects userinfo, resolves DNS with socket.getaddrinfo, and blocks loopback,
-    private, link-local, multicast, unspecified, and cloud metadata IPs.
+
+def validate_thread_id(thread_id: str) -> str:
+    """Validate that thread_id matches ^[A-Za-z0-9_-]{1,64}$."""
+    if not isinstance(thread_id, str) or not _THREAD_ID_RE.fullmatch(thread_id):
+        raise ValueError("Invalid thread_id.")
+    return thread_id
+
+
+def _validate_url_preliminary(
+    url: str, *, allow_local_ib: bool | None = None
+) -> tuple[str, int, str | None]:
+    """Validate URL syntax, scheme, port, userinfo, and IP literals without DNS lookup.
+
+    Returns (hostname, port, resolved_ip_or_none). When resolved_ip_or_none is None,
+    the caller must resolve hostname via DNS and validate every returned IP.
     """
     if not url or not isinstance(url, str):
         raise SSRFError("Missing or invalid URL")
@@ -172,7 +185,7 @@ def validate_fetch_url(url: str, *, allow_local_ib: bool | None = None) -> None:
         raise SSRFError("Userinfo is not allowed in URL")
 
     hostname = parsed.hostname.strip("[]").lower()
-    local_ib_ok = ALLOW_LOCAL_IB if allow_local_ib is None else allow_local_ib
+    local_ib_ok = config.ALLOW_LOCAL_IB if allow_local_ib is None else allow_local_ib
 
     # Explicit opt-in exception for local IB sidecar on localhost:8471
     if (
@@ -181,7 +194,7 @@ def validate_fetch_url(url: str, *, allow_local_ib: bool | None = None) -> None:
         and hostname in ("localhost", "127.0.0.1")
         and parsed.port == 8471
     ):
-        return
+        return hostname, 8471, "127.0.0.1"
 
     if scheme != "https":
         raise SSRFError("Only HTTPS URLs are supported")
@@ -202,6 +215,23 @@ def validate_fetch_url(url: str, *, allow_local_ib: bool | None = None) -> None:
 
     if is_ip_literal:
         _check_ip_allowed(hostname)
+        return hostname, port, hostname
+
+    return hostname, port, None
+
+
+def validate_fetch_url_syntax(url: str, *, allow_local_ib: bool | None = None) -> None:
+    """Validate URL scheme, host syntax, port, userinfo, and IP literals without DNS lookup."""
+    _validate_url_preliminary(url, allow_local_ib=allow_local_ib)
+
+
+def _validate_and_resolve_fetch_url(
+    url: str, *, allow_local_ib: bool | None = None
+) -> tuple[str, str]:
+    """Validate an outbound URL against SSRF rules and return (hostname, pinned_ip)."""
+    hostname, port, direct_ip = _validate_url_preliminary(url, allow_local_ib=allow_local_ib)
+    if direct_ip is not None:
+        return hostname, direct_ip
 
     try:
         addrs = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
@@ -213,12 +243,93 @@ def validate_fetch_url(url: str, *, allow_local_ib: bool | None = None) -> None:
     if not addrs:
         raise SSRFError(f"No IP address found for hostname: {hostname}")
 
+    pinned_ip = ""
     for _, _, _, _, sockaddr in addrs:
         ip_str = sockaddr[0]
         # Strip IPv6 scope ID if present (e.g. fe80::1%lo0)
         if "%" in ip_str:
             ip_str = ip_str.split("%", 1)[0]
         _check_ip_allowed(ip_str)
+        if not pinned_ip:
+            pinned_ip = ip_str
+
+    return hostname, pinned_ip
+
+
+def validate_fetch_url(url: str, *, allow_local_ib: bool | None = None) -> None:
+    """Validate an outbound URL against SSRF rules.
+
+    Enforces HTTPS on port 443 (except localhost:8471 when allow_local_ib=True),
+    rejects userinfo, resolves DNS with socket.getaddrinfo, and blocks loopback,
+    private, link-local, multicast, unspecified, and cloud metadata IPs.
+    """
+    _validate_and_resolve_fetch_url(url, allow_local_ib=allow_local_ib)
+
+
+_ORIGINAL_VALIDATE_FETCH_URL = validate_fetch_url
+
+
+class _PinnedDNSAdapter(HTTPAdapter):
+    """HTTPAdapter that connects to a pre-validated IP while preserving TLS SNI and hostname check."""
+
+    def __init__(self, resolved_ip: str, original_host: str, **kwargs: Any) -> None:
+        self._resolved_ip = resolved_ip
+        self._original_host = original_host
+        super().__init__(**kwargs)
+
+    def build_connection_pool_key_attributes(
+        self, request: requests.PreparedRequest, verify: Any, cert: Any = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        host_params, pool_kwargs = super().build_connection_pool_key_attributes(
+            request, verify, cert
+        )
+        host_params["host"] = self._resolved_ip
+        if host_params.get("scheme") == "https":
+            pool_kwargs["assert_hostname"] = self._original_host
+            pool_kwargs["server_hostname"] = self._original_host
+        return host_params, pool_kwargs
+
+
+def read_bounded_response(
+    resp: requests.Response,
+    max_bytes: int,
+    *,
+    truncate: bool = False,
+    chunk_size: int = 65536,
+) -> bytes:
+    """Stream a response body up to max_bytes, preventing unbounded memory buffering."""
+    try:
+        headers = getattr(resp, "headers", None) or {}
+        if not truncate and hasattr(headers, "items"):
+            cl = next(
+                (v for k, v in headers.items() if str(k).lower() == "content-length"),
+                None,
+            )
+            if cl is not None:
+                try:
+                    cl_int = int(cl)
+                except (TypeError, ValueError):
+                    cl_int = -1
+                if cl_int > max_bytes:
+                    raise ValueError(
+                        f"File exceeds maximum allowed size ({cl_int} > {max_bytes} bytes)."
+                    )
+        buf = bytearray()
+        for chunk in resp.iter_content(chunk_size=chunk_size):
+            if not chunk:
+                continue
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                if truncate:
+                    del buf[max_bytes:]
+                    break
+                raise ValueError(
+                    f"File exceeds maximum allowed size (> {max_bytes} bytes)."
+                )
+        return bytes(buf)
+    finally:
+        if hasattr(resp, "close"):
+            resp.close()
 
 
 def safe_fetch(
@@ -232,18 +343,51 @@ def safe_fetch(
 ) -> requests.Response:
     """Perform an HTTP GET while validating the initial URL and every redirect hop against SSRF."""
     current_url = url
-    http = session if session is not None else requests
     req_headers = dict(headers) if headers else {}
 
     for _ in range(max_redirects + 1):
-        validate_fetch_url(current_url, allow_local_ib=allow_local_ib)
-        resp = http.get(
-            current_url,
-            headers=req_headers,
-            stream=stream,
-            allow_redirects=False,
-            timeout=timeout,
-        )
+        if session is not None:
+            validate_fetch_url(current_url, allow_local_ib=allow_local_ib)
+            resp = session.get(
+                current_url,
+                headers=req_headers,
+                stream=stream,
+                allow_redirects=False,
+                timeout=timeout,
+            )
+            pinned_sess = None
+        else:
+            if validate_fetch_url is _ORIGINAL_VALIDATE_FETCH_URL:
+                orig_host, pinned_ip = _validate_and_resolve_fetch_url(
+                    current_url, allow_local_ib=allow_local_ib
+                )
+            else:
+                validate_fetch_url(current_url, allow_local_ib=allow_local_ib)
+                orig_host = (urlparse(current_url).hostname or "").strip("[]").lower()
+                pinned_ip = ""
+
+            parsed = urlparse(current_url)
+            hop_headers = dict(req_headers)
+            if pinned_ip and not any(k.lower() == "host" for k in hop_headers):
+                hop_headers["Host"] = parsed.netloc
+
+            pinned_sess = requests.Session()
+            pinned_sess.trust_env = False
+            if pinned_ip:
+                adapter = _PinnedDNSAdapter(pinned_ip, orig_host)
+                pinned_sess.mount(f"{parsed.scheme.lower()}://", adapter)
+            try:
+                resp = pinned_sess.get(
+                    current_url,
+                    headers=hop_headers,
+                    stream=stream,
+                    allow_redirects=False,
+                    timeout=timeout,
+                )
+            except Exception:
+                pinned_sess.close()
+                raise
+
         if 300 <= resp.status_code < 400 and "location" in resp.headers:
             location = resp.headers["location"]
             new_url = urljoin(current_url, location)
@@ -255,6 +399,8 @@ def safe_fetch(
             current_url = new_url
             if hasattr(resp, "close"):
                 resp.close()
+            if pinned_sess is not None:
+                pinned_sess.close()
             continue
         return resp
 

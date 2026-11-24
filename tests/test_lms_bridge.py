@@ -292,3 +292,34 @@ def test_write_confirmation_flow(mock_session, monkeypatch):
     # Replay must fail
     with pytest.raises(PermissionError):
         execute_confirmed_write(write_mgr, mock_session, token_id)
+
+
+def test_live_test_lockout_blocks_unsubmitted_assessment_and_task(mock_session, monkeypatch):
+    """assert_not_live_test must block unsubmitted FA/SA assessments and learning tasks."""
+    import app.lms_bridge as bridge
+
+    fake_lms = MagicMock()
+    fake_lms.my_courses.return_value = {"courses": []}
+    fake_lms.eol_tests.return_value = {"results": []}
+    fake_lms.assessments.return_value = {
+        "results": [
+            {"id": "fa_live_1", "assignment_id": "fa_live_1", "title": "Live FA", "status": "in_progress"}
+        ]
+    }
+    fake_lms.learning_tasks.return_value = [
+        {"id": "task_live_1", "title": "Live Task", "status": "pending"}
+    ]
+    fake_lms.calendar_events.return_value = {"events": []}
+    fake_lms.attendance_day.return_value = {}
+    fake_lms.notifications.return_value = {"notifications": []}
+    fake_lms.announcements.return_value = {"announcements": []}
+    monkeypatch.setattr(bridge, "lms", fake_lms)
+
+    with pytest.raises(PermissionError, match="Live test protection"):
+        get_graded_item_detail(mock_session, "assessment", "fa_live_1")
+    assert fake_lms.assessment_submission.call_count == 0
+    assert fake_lms.assessment_feedback.call_count == 0
+
+    with pytest.raises(PermissionError, match="Live test protection"):
+        get_graded_item_detail(mock_session, "task", "task_live_1")
+    assert fake_lms.learning_task_detail.call_count == 0

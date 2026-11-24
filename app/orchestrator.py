@@ -17,6 +17,7 @@ import base64
 import json
 import random
 import re
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -27,7 +28,12 @@ import requests
 from app import config, file_reader, ib_client, integrations, prompts, research
 from app.db import Database
 from app.practice.service import PracticeService
-from app.security import WriteConfirmationManager, assert_not_live_test, sanitize_filename
+from app.security import (
+    WriteConfirmationManager,
+    assert_not_live_test,
+    sanitize_filename,
+    validate_thread_id,
+)
 from app.sessions import Session
 
 
@@ -492,13 +498,19 @@ class Orchestrator:
         and interactive cards pause the loop until the student answers.
         """
 
+        thread_id = validate_thread_id(thread_id)
         thread = self.db.get_thread(session.owner, thread_id)
         if not thread:
-            thread = self.db.create_thread(
-                owner=session.owner,
-                title=user_message[:40] or "New Session",
-                thread_id=thread_id,
-            )
+            if self.db.query_one("SELECT 1 FROM threads WHERE id = ?", (thread_id,)):
+                raise PermissionError("Thread not found.")
+            try:
+                thread = self.db.create_thread(
+                    owner=session.owner,
+                    title=user_message[:40] or "New Session",
+                    thread_id=thread_id,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise PermissionError("Thread not found.") from exc
 
         # 1. Attach explicit files if provided
         if attached_refs:
@@ -1129,7 +1141,10 @@ class Orchestrator:
         png_data_url = feedback.get("png_data_url")
         error_msg = feedback.get("error")
 
-        thread_id = pending["thread_id"]
+        try:
+            thread_id = validate_thread_id(str(pending.get("thread_id") or ""))
+        except ValueError:
+            return {"status": "error", "message": "Invalid visual thread."}
         kind = pending["kind"]
         slug = pending["slug"]
         source = pending["source_code"]
@@ -1139,7 +1154,10 @@ class Orchestrator:
             # Save visual in DB
             viz_id = str(uuid.uuid4())
             data_dir = config.ensure_data_dir()
-            viz_dir = data_dir / "viz" / thread_id
+            viz_root = (data_dir / "viz").resolve()
+            viz_dir = (viz_root / thread_id).resolve()
+            if not viz_dir.is_relative_to(viz_root) or viz_dir == viz_root:
+                return {"status": "error", "message": "Invalid visual path."}
             viz_dir.mkdir(parents=True, exist_ok=True)
 
             png_path = None

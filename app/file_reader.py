@@ -31,7 +31,12 @@ from app.integrations.base import (
     IntegrationNotConnectedError as LMSNotAuthenticatedError,
     IntegrationUpstreamError as LMSUpstreamError,
 )
-from app.security import Cipher, safe_fetch, sanitize_filename
+from app.security import Cipher, read_bounded_response, safe_fetch, sanitize_filename
+
+
+def _read_bounded_response(resp: Any, max_bytes: int) -> bytes:
+    """Read a streaming HTTP response body up to max_bytes."""
+    return read_bounded_response(resp, max_bytes, truncate=False)
 
 # Teacher-authored and classmate-authored content is data, never instruction.
 # The envelope makes that explicit to the model and survives into the
@@ -447,16 +452,18 @@ def fetch_and_cache_ref(
             if cached and Path(cached["blob_path"]).exists():
                 return cached
 
-        base_url = config.get_setting("IB_SCRAPE_BASE_URL", "https://ib-scrape.sidevv.xyz")
+        base_url = (config.get_setting("IB_SCRAPE_BASE_URL", "https://ib-scrape.sidevv.xyz") or "https://ib-scrape.sidevv.xyz").rstrip("/")
         url = f"{base_url}/download/{target_sha}"
         resp = safe_fetch(url, stream=True)
         if resp.status_code >= 400:
+            if hasattr(resp, "close"):
+                resp.close()
             raise LMSUpstreamError(f"Failed to download IB resource {target_sha}: HTTP {resp.status_code}")
 
         cdisp = resp.headers.get("content-disposition", "")
         m = re.search(r'filename="?([^";]+)"?', cdisp)
         fname = m.group(1) if m else f"{target_sha}.pdf"
-        raw = resp.content
+        raw = _read_bounded_response(resp, config.MAX_FILE_BYTES)
         return ingest_bytes(
             db=db,
             owner=owner,
@@ -489,12 +496,14 @@ def fetch_and_cache_ref(
         headers = {"Authorization": f"Bearer {session.access}"}
         resp = safe_fetch(dl_url, headers=headers, stream=True)
         if resp.status_code >= 400:
+            if hasattr(resp, "close"):
+                resp.close()
             raise LMSUpstreamError(f"Indus LMS file download failed: HTTP {resp.status_code}")
 
         cdisp = resp.headers.get("content-disposition", "")
         m = re.search(r'filename="?([^";]+)"?', cdisp)
         fname = m.group(1) if m else f"{file_id}.pdf"
-        raw = resp.content
+        raw = _read_bounded_response(resp, config.MAX_FILE_BYTES)
 
         return ingest_bytes(
             db=db,
@@ -520,12 +529,14 @@ def fetch_and_cache_ref(
 
         resp = safe_fetch(target_url, stream=True)
         if resp.status_code >= 400:
+            if hasattr(resp, "close"):
+                resp.close()
             raise LMSUpstreamError(f"Attachment download failed: HTTP {resp.status_code}")
 
         cdisp = resp.headers.get("content-disposition", "")
         m = re.search(r'filename="?([^";]+)"?', cdisp)
         fname = m.group(1) if m else Path(target_url).name or "attachment"
-        raw = resp.content
+        raw = _read_bounded_response(resp, config.MAX_FILE_BYTES)
 
         return ingest_bytes(
             db=db,

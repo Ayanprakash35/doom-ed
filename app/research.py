@@ -11,9 +11,12 @@ import xml.etree.ElementTree as ET
 from typing import Any
 import requests
 
+from app.security import SSRFError, read_bounded_response, safe_fetch
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 10
+MAX_WEB_FETCH_BYTES = 512 * 1024
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -59,22 +62,23 @@ def strip_html_content(html_str: str) -> tuple[str, str]:
 
 
 def web_fetch(url: str, max_chars: int = 12000) -> dict[str, Any]:
-    """Fetch web page content, strip script/style tags, and extract readable text.
+    """Fetch web page content over validated HTTPS, strip script/style tags, and extract readable text.
 
     Args:
-        url: HTTP or HTTPS URL to fetch.
+        url: HTTPS URL to fetch.
         max_chars: Maximum characters of text content to return (default: 12000).
 
     Returns:
         dict with keys: "url", "title", "text", "status", "error"
     """
-    if not url or not (url.startswith("http://") or url.startswith("https://")):
+    scheme = (urllib.parse.urlparse(url).scheme or "").lower() if isinstance(url, str) and url else ""
+    if not url or scheme != "https":
         return {
             "url": url,
             "title": "",
             "text": "",
             "status": 0,
-            "error": "Invalid URL scheme (must be http:// or https://)",
+            "error": "Invalid URL scheme (must be https://)",
         }
 
     headers = {
@@ -84,16 +88,17 @@ def web_fetch(url: str, max_chars: int = 12000) -> dict[str, Any]:
     }
 
     try:
-        resp = requests.get(
+        resp = safe_fetch(
             url,
             headers=headers,
+            stream=True,
             timeout=DEFAULT_TIMEOUT,
-            verify=True,
-            allow_redirects=True,
         )
         status_code = resp.status_code
 
         if status_code >= 400:
+            if hasattr(resp, "close"):
+                resp.close()
             return {
                 "url": url,
                 "title": "",
@@ -102,8 +107,20 @@ def web_fetch(url: str, max_chars: int = 12000) -> dict[str, Any]:
                 "error": f"HTTP {status_code}",
             }
 
-        content_type = resp.headers.get("Content-Type", "").lower()
-        raw_text = resp.text
+        resp_headers = getattr(resp, "headers", None) or {}
+        content_type = ""
+        if hasattr(resp_headers, "items"):
+            content_type = next(
+                (str(v).lower() for k, v in resp_headers.items() if str(k).lower() == "content-type"),
+                "",
+            )
+
+        raw_bytes = read_bounded_response(
+            resp, MAX_WEB_FETCH_BYTES, truncate=True, chunk_size=16384
+        )
+        enc = getattr(resp, "encoding", None)
+        encoding = enc if isinstance(enc, str) and enc else "utf-8"
+        raw_text = raw_bytes.decode(encoding, errors="replace")
 
         if "html" in content_type or "<html" in raw_text[:500].lower():
             title, clean_text = strip_html_content(raw_text)
@@ -120,6 +137,15 @@ def web_fetch(url: str, max_chars: int = 12000) -> dict[str, Any]:
             "error": None,
         }
 
+    except SSRFError as e:
+        logger.warning("Blocked unsafe web_fetch %s: %s", url, e)
+        return {
+            "url": url,
+            "title": "",
+            "text": "",
+            "status": 0,
+            "error": str(e),
+        }
     except requests.RequestException as e:
         logger.warning("Failed to fetch %s: %s", url, e)
         return {

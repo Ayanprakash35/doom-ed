@@ -828,15 +828,38 @@ function svgViewBoxSize(svg) {
   return { width: rect.width || 600, height: rect.height || 400 };
 }
 
+const SVG_DROP_TAGS = new Set([
+  'script',
+  'iframe',
+  'object',
+  'embed',
+  'audio',
+  'video',
+  'style',
+  'animate',
+  'set',
+  'use',
+  'foreignobject',
+]);
+
 function sanitizeSvgElement(svg) {
-  const drop = svg.querySelectorAll('script, iframe, object, embed, audio, video, foreignObject script');
+  const drop = svg.querySelectorAll('script, iframe, object, embed, audio, video, style, animate, set, use, foreignObject script');
   drop.forEach((node) => node.remove());
   const walk = (node) => {
     if (node.nodeType !== 1) return;
+    const tag = (node.localName || node.nodeName || '').toLowerCase();
+    if (SVG_DROP_TAGS.has(tag)) {
+      node.remove();
+      return;
+    }
     for (const attr of [...node.attributes]) {
       const name = attr.name.toLowerCase();
+      const compact = attr.value.replace(/[\x00-\x20]+/g, '');
       if (name.startsWith('on')) node.removeAttribute(attr.name);
-      else if ((name === 'href' || name === 'xlink:href') && /^\s*(javascript:|data:text\/html)/i.test(attr.value)) {
+      else if (
+        (name === 'href' || name === 'xlink:href') &&
+        /^(javascript:|vbscript:|data:text\/html|data:image\/svg\+xml)/i.test(compact)
+      ) {
         node.removeAttribute(attr.name);
       }
     }
@@ -850,7 +873,7 @@ function svgMarkupToElement(markup) {
   let clean = String(markup || '');
   if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
     try {
-      clean = window.DOMPurify.sanitize(clean, { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['style'] });
+      clean = window.DOMPurify.sanitize(clean, { USE_PROFILES: { svg: true, svgFilters: true } });
     } catch (e) {
       /* fall back to the manual scrub below */
     }

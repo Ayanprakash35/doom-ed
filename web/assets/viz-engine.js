@@ -170,13 +170,59 @@ export async function renderMermaidToElement(container, source) {
   return svg;
 }
 
+const SVG_DROP_TAGS = new Set([
+  'script',
+  'iframe',
+  'object',
+  'embed',
+  'audio',
+  'video',
+  'style',
+  'animate',
+  'set',
+  'use',
+  'foreignobject',
+]);
+
+function scrubSvgElement(svg) {
+  const walk = (node) => {
+    if (node.nodeType !== 1) return;
+    for (const attr of [...node.attributes]) {
+      const name = attr.name.toLowerCase();
+      const compact = attr.value.replace(/[\x00-\x20]+/g, '');
+      if (name.startsWith('on')) {
+        node.removeAttribute(attr.name);
+      } else if (
+        (name === 'href' || name === 'xlink:href') &&
+        /^(javascript:|vbscript:|data:text\/html|data:image\/svg\+xml)/i.test(compact)
+      ) {
+        node.removeAttribute(attr.name);
+      }
+    }
+    for (const child of [...node.children]) {
+      const tag = (child.localName || child.nodeName || '').toLowerCase();
+      if (SVG_DROP_TAGS.has(tag)) {
+        child.remove();
+      } else {
+        walk(child);
+      }
+    }
+  };
+  walk(svg);
+  return svg;
+}
+
 /**
  * Parse raw SVG source (the svg-maker output). Throws on XML/syntax errors and
- * returns a DOM-imported <svg> element ready to be attached.
+ * returns a sanitized, DOM-imported <svg> element ready to be attached.
  */
 export function parseSvgSource(source) {
-  const text = String(source ?? '').trim();
+  let text = String(source ?? '').trim();
   if (!text) throw new Error('Empty SVG source.');
+  if (typeof window !== 'undefined' && window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+    text = window.DOMPurify.sanitize(text, { USE_PROFILES: { svg: true } });
+    if (!text || !text.trim()) throw new Error('SVG source rejected by sanitizer.');
+  }
   const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
   const parserError = doc.querySelector('parsererror');
   if (parserError) {
@@ -187,7 +233,7 @@ export function parseSvgSource(source) {
   if (!root || root.localName.toLowerCase() !== 'svg') {
     throw new Error('SVG source root element must be <svg>.');
   }
-  return document.importNode(root, true);
+  return scrubSvgElement(document.importNode(root, true));
 }
 
 function pixelDimension(svg, name) {
