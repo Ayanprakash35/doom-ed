@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Future work roadmap in `docs/FUTURE_WORK.md`: prioritized content, checkpoint, teaching-loop, UI, operations, and calibration work with milestones and exit criteria.
 
 ### Changed
+- Restyled the web UI (`web/assets/style.css`, `web/assets/home.css`, `web/index.html`, `web/assets/app.js`) to one neutral system with a single bronze accent: near-black `#111111` / light `#f2f2f2` themes, vendored Host Grotesk + JetBrains Mono (`web/assets/vendor/fonts/`, SIL OFL), one filled primary button per view, 1px hover/press steps and 2px card lifts, no gradients, blurs, glows or translucent tints. Text never drops below 13px; every text colour clears WCAG AA in both themes; controls reach 44px on phones and coarse pointers. Refreshed `docs/assets/homepage.png`.
+- Fixed the profile card (`DP 2` no longer wraps; the LMS status pill keeps its own style), made the student name a keyboard-reachable button for the profile dialog, dropped the repeated subject prefix from triage items, removed the inline style on the local-study button, and gave phones a shorter composer placeholder instead of a clipped one.
 - Added `sse-starlette>=2.0.0` to `requirements.txt`, replaced deprecated FastAPI `@app.on_event("startup")` with `lifespan`, imported `LMSUpstreamError`/`LMSNotAuthenticatedError` in `app/file_reader.py`, and removed hardcoded local machine paths from `app/lms_bridge.py` and `scripts/capture_screenshot.py`.
 - Login, profile sync, and the teacher's LMS tools resolve an integration plugin instead of calling the bridge directly.
 - Thread creation now records `origin` and `origin_json`, so a lesson can carry the practice evidence that opened it.
