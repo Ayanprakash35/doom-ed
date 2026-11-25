@@ -779,9 +779,13 @@ img, svg, video { max-width: 100%; }
 .msg.error .msg-body { border-color: var(--line-2); background: var(--late-soft); color: var(--late-ink); font-family: var(--font-sans); font-size: 13.5px; }
 .msg.just-added { animation: fade-up 0.2s ease-out; }
 .msg.streaming .msg-body::after {
-  content: "▍";
-  margin-left: 2px;
-  color: var(--brand);
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 4px;
+  vertical-align: -0.15em;
+  background: var(--brand);
   animation: blink 1s steps(1) infinite;
 }
 .msg .interactive-card { margin-top: 10px; }
@@ -914,7 +918,7 @@ img, svg, video { max-width: 100%; }
 .card-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .card-kicker {
   font-size: 13px; font-weight: 800;
-  
+
   color: var(--muted);
 }
 .card-tag { margin-left: auto; font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: var(--muted); }
@@ -991,7 +995,7 @@ img, svg, video { max-width: 100%; }
 .quiz-explanation-label {
   display: block; margin-bottom: 4px;
   font-size: 13px; font-weight: 800;
-  
+
   color: var(--muted);
 }
 
@@ -1110,7 +1114,7 @@ img, svg, video { max-width: 100%; }
   display: inline-flex; align-items: center; gap: 5px;
   padding: 1px 8px; border-radius: 999px;
   font-size: 13px; font-weight: 800;
-  
+
 }
 .visual-status.verified { background: var(--done-soft); color: var(--done-ink); }
 .visual-status.pending { background: var(--surface-3); color: var(--muted); border: 1px solid var(--line); }
@@ -1430,7 +1434,7 @@ img, svg, video { max-width: 100%; }
 .field > span {
   font-family: var(--font-mono);
   font-size: 13px; font-weight: 800;
-  
+
   color: var(--muted);
 }
 .field input {
@@ -1499,7 +1503,7 @@ img, svg, video { max-width: 100%; }
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 700;
-  
+
   color: var(--muted);
   margin-bottom: 4px;
 }
@@ -1553,6 +1557,7 @@ img, svg, video { max-width: 100%; }
   animation: toast-in 0.18s ease-out;
 }
 .toast.error { background: var(--late); color: #fcfcfa; }
+:root[data-theme="dark"] .toast.error { color: #1c1c1c; }
 .toast .toast-action { border: 0; border-radius: 6px; padding: 4px 10px; background: var(--brand); color: var(--on-brand); font-weight: 600; font-size: 13px; }
 
 /* --------------------------------------------------------------- animations */
@@ -1599,6 +1604,9 @@ h1, h2, h3, h4 { font-weight: 500; letter-spacing: -0.015em; }
 .chat-card-mount .dcard .dcard-btn {
   background: var(--brand); color: var(--on-brand); border: 1px solid transparent;
 }
+.chat-card-mount .dcard .dcard-btn.ghost {
+  background: var(--bg); color: var(--ink); border-color: var(--line-2);
+}
 .send-btn { min-height: 44px; padding-inline: 20px; }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1614,6 +1622,9 @@ h1, h2, h3, h4 { font-weight: 500; letter-spacing: -0.015em; }
   :root[data-theme="dark"] .send-btn:hover, :root[data-theme="dark"] .btn.submit-quiz:hover,
   .chat-card-mount .dcard .dcard-btn:hover {
     background: var(--brand-hover); color: var(--on-brand); border-color: transparent;
+  }
+  .chat-card-mount .dcard .dcard-btn.ghost:hover {
+    background: var(--surface-2); color: var(--ink); border-color: var(--ink-2);
   }
 }
 .btn:active, .side-action:active, .suggestion:active, .login-trigger:active {
@@ -1657,6 +1668,14 @@ h1, h2, h3, h4 { font-weight: 500; letter-spacing: -0.015em; }
 }
 .chat-card-mount .dcard .dcard-opt.is-chosen { background: var(--surface-2); border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
 .chat-card-mount .dcard .dcard-opt.is-chosen .dcard-opt-mark { background: var(--ink); border-color: var(--ink); }
+.chat-card-mount .dcard .dcard-opt.is-correct {
+  background: var(--done-soft); border-color: var(--done); box-shadow: inset 0 0 0 1px var(--done);
+}
+.chat-card-mount .dcard .dcard-opt.is-wrong {
+  background: var(--late-soft); border-color: var(--late); box-shadow: inset 0 0 0 1px var(--late);
+}
+.chat-card-mount .dcard .dcard-opt.is-correct .dcard-opt-mark { background: var(--done); border-color: var(--done); }
+.chat-card-mount .dcard .dcard-opt.is-wrong .dcard-opt-mark { background: var(--late); border-color: var(--late); }
 .chat-card-mount .dcard .dcard-chip { background: var(--surface-2); color: var(--ink-2); font-weight: 500; }
 
 /* Links: one look, a faint hairline that the ink draws over. */
@@ -1671,6 +1690,9 @@ h1, h2, h3, h4 { font-weight: 500; letter-spacing: -0.015em; }
 @media (pointer: coarse) {
   .btn, .btn.sm, .side-action, .suggestion, .signout-btn, .view-tab, .file-chip,
   .seg-toggle button, .login-trigger { min-height: var(--target-touch); }
+  .chip-rm, .visual-zoom button, .thread-delete {
+    min-width: var(--target-touch); min-height: var(--target-touch);
+  }
 }
 
 
@@ -1694,6 +1716,7 @@ h1, h2, h3, h4 { font-weight: 500; letter-spacing: -0.015em; }
   .empty-state h2 { font-size: 15px; }
   .btn, .btn.sm, .side-action, .suggestion, .signout-btn, .view-tab, .file-chip, .login-trigger, .send-btn { min-height: 44px; }
   .attach-btn, .icon-btn { width: 44px; height: 44px; }
+  .chip-rm, .visual-zoom button, .thread-delete { min-width: 44px; min-height: 44px; }
   #prompt-input { min-height: 44px; }
 }
 

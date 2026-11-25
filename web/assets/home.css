@@ -20,7 +20,7 @@
   top: 0;
   z-index: 12;
   border-bottom: 1px solid var(--line);
-  background: var(--line-2);
+  background: var(--bg);
 }
 .home-header-inner {
   width: min(760px, 100%);
@@ -363,8 +363,14 @@
   border-radius: 50%;
   background: var(--done-soft);
   color: var(--done-ink);
-  font-size: 13px;
-  font-weight: 700;
+}
+.feed-answered-mark::before {
+  content: "";
+  width: 8px;
+  height: 4px;
+  border-left: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-1px) rotate(-45deg);
 }
 .feed-answered-note { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
 
@@ -560,6 +566,10 @@
   .home-progress { grid-column: 1 / -1; }
   .feed-card-actions { gap: 2px; }
   .feed-action { padding: 6px 8px; }
+}
+
+@media (pointer: coarse), (max-width: 640px) {
+  .feed-action, .feed-why summary { min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
